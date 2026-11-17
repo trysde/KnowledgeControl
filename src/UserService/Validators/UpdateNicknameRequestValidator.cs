@@ -1,5 +1,5 @@
 ﻿using FluentValidation;
-using KnowledgeControl.UserService.Contracts.Users;
+using UserService.Contracts.Users;
 
 namespace KnowledgeControl.UserService.Validators;
 

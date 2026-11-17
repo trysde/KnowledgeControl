@@ -1,5 +1,5 @@
 ﻿using FluentValidation;
-using KnowledgeControl.UserService.Contracts.Bans;
+using UserService.Contracts.Bans;
 
 namespace KnowledgeControl.UserService.Validators;
 

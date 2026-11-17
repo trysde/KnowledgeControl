@@ -1,5 +1,5 @@
 ﻿using FluentValidation;
-using KnowledgeControl.UserService.Contracts.Users;
+using UserService.Contracts.Users;
 
 namespace KnowledgeControl.UserService.Validators;
 
@@ -12,7 +12,7 @@ public class ChangePasswordRequestValidator : AbstractValidator<ChangePasswordRe
 
         RuleFor(x => x.NewPassword)
             .NotEmpty().WithMessage("Новый пароль обязателен.")
-            .MinimumLength(6).WithMessage("Новый пароль должен содержать минимум 6 символов.")
+            .MinimumLength(8).WithMessage("Новый пароль должен содержать минимум 8 символов.")
             .MaximumLength(100).WithMessage("Новый пароль не должен превышать 100 символов.")
             .NotEqual(x => x.CurrentPassword).WithMessage("Новый пароль не должен совпадать со старым.");
     }

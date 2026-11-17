@@ -1,5 +1,5 @@
 ﻿using FluentValidation;
-using KnowledgeControl.UserService.Contracts.Auth;
+using UserService.Contracts.Auth;
 
 namespace KnowledgeControl.UserService.Validators;
 
@@ -19,7 +19,7 @@ public class RegisterRequestValidator : AbstractValidator<RegisterRequest>
 
         RuleFor(x => x.Password)
             .NotEmpty().WithMessage("Пароль обязателен.")
-            .MinimumLength(6).WithMessage("Пароль должен содержать минимум 6 символов.")
+            .MinimumLength(8).WithMessage("Пароль должен содержать минимум 8 символов.")
             .MaximumLength(100).WithMessage("Пароль не должен превышать 100 символов.");
     }
 }

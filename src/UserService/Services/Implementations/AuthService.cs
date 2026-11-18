@@ -1,6 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Shared.Common.Exceptions;
-using Shared.Contracts.Events;
 using UserService.Contracts.Auth;
 using UserService.Contracts.Users;
 using UserService.Data;
@@ -13,8 +12,7 @@ public class AuthService(
     UserDbContext dbContext,
     IPasswordHasher passwordHasher,
     IJwtTokenService jwtTokenService,
-    IBanService banService,
-    IMessagePublisher messagePublisher) : IAuthService
+    IBanService banService) : IAuthService
 {
     public async Task<RegisterResponse> RegisterAsync(RegisterRequest request, CancellationToken cancellationToken = default)
     {
@@ -52,14 +50,6 @@ public class AuthService(
 
         dbContext.Users.Add(user);
         await dbContext.SaveChangesAsync(cancellationToken);
-
-        await messagePublisher.PublishAsync(
-            new UserRegisteredEvent(
-                EventId: Guid.NewGuid(),
-                Uid: user.Uid,
-                Nickname: user.Nickname,
-                OccurredAt: new DateTimeOffset(user.CreatedAt, TimeSpan.Zero)),
-            cancellationToken);
 
         var token = jwtTokenService.GenerateToken(user);
 

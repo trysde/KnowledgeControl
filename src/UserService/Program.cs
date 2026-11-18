@@ -1,6 +1,5 @@
 using System.Text;
 using FluentValidation;
-using MassTransit;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -57,30 +56,12 @@ builder.Services.AddAuthorizationBuilder()
     .AddPolicy("RequireModerator", policy =>
         policy.RequireClaim("is_moderator", "true"));
 
-// MassTransit + RabbitMQ
-builder.Services.AddMassTransit(x =>
-{
-    x.UsingRabbitMq((context, cfg) =>
-    {
-        var rabbitHost = builder.Configuration["RabbitMq:Host"] ?? "localhost";
-        var rabbitUser = builder.Configuration["RabbitMq:Username"] ?? "guest";
-        var rabbitPass = builder.Configuration["RabbitMq:Password"] ?? "guest";
-
-        cfg.Host(rabbitHost, "/", h =>
-        {
-            h.Username(rabbitUser);
-            h.Password(rabbitPass);
-        });
-    });
-});
-
 // Регистрация сервисов приложения
 builder.Services.AddScoped<IPasswordHasher, BCryptPasswordHasher>();
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IUserService, UserProfileService>();
 builder.Services.AddScoped<IBanService, BanService>();
-builder.Services.AddScoped<IMessagePublisher, RabbitMqMessagePublisher>();
 
 var app = builder.Build();
 

@@ -1,4 +1,4 @@
-﻿namespace KnowledgeControl.UserService.Contracts.Auth;
+﻿namespace UserService.Contracts.Auth;
 
 public record RegisterRequest
 {

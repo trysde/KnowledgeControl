@@ -2,45 +2,54 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
+using Shared.Common.Exceptions;
 
 namespace Shared.Common.Middleware;
 
-public class ExceptionHandlingMiddleware
+public class ExceptionHandlingMiddleware(
+    RequestDelegate next,
+    ILogger<ExceptionHandlingMiddleware> logger)
 {
-    private readonly RequestDelegate _next;
-    private readonly ILogger<ExceptionHandlingMiddleware> _logger;
-
-    public ExceptionHandlingMiddleware(RequestDelegate next, ILogger<ExceptionHandlingMiddleware> logger)
-    {
-        _next = next;
-        _logger = logger;
-    }
-
     public async Task InvokeAsync(HttpContext context)
     {
         try
         {
-            await _next(context);
+            await next(context);
+        }
+        catch (AppException ex)
+        {
+            logger.LogWarning("Application error ({ErrorCode}): {Message}", ex.ErrorCode, ex.Message);
+            await WriteErrorResponseAsync(context, ex.StatusCode, ex.ErrorCode, ex.Message, ex.Details);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "An unhandled exception occurred: {Message}", ex.Message);
-            await HandleExceptionAsync(context, ex);
+            logger.LogError(ex, "An unhandled exception occurred: {Message}", ex.Message);
+            await WriteErrorResponseAsync(
+                context,
+                HttpStatusCode.InternalServerError,
+                "INTERNAL_SERVER_ERROR",
+                "An internal server error occurred.",
+                Array.Empty<string>());
         }
     }
 
-    private static Task HandleExceptionAsync(HttpContext context, Exception exception)
+    private static Task WriteErrorResponseAsync(
+        HttpContext context,
+        HttpStatusCode statusCode,
+        string code,
+        string message,
+        IReadOnlyCollection<string> details)
     {
         context.Response.ContentType = "application/json";
-        context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
+        context.Response.StatusCode = (int)statusCode;
 
         var response = new
         {
             error = new
             {
-                code = "INTERNAL_SERVER_ERROR",
-                message = "An internal server error occurred.",
-                details = Array.Empty<string>()
+                code,
+                message,
+                details
             }
         };
 

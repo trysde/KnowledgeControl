@@ -1,4 +1,4 @@
-﻿namespace KnowledgeControl.UserService.Contracts.Users;
+﻿namespace UserService.Contracts.Users;
 
 public record UserInfoResponse(
     Guid Uid,

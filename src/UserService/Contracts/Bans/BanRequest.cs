@@ -1,4 +1,4 @@
-﻿namespace KnowledgeControl.UserService.Contracts.Bans;
+﻿namespace UserService.Contracts.Bans;
 
 public record BanRequest
 {

@@ -1,4 +1,4 @@
-﻿namespace KnowledgeControl.Shared.Contracts.Events;
+﻿namespace Shared.Contracts.Events;
 
 public record UserRegisteredEvent(
     Guid EventId,

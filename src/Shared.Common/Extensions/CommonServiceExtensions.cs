@@ -26,7 +26,10 @@ public static class CommonServiceExtensions
 
     public static IServiceCollection AddCommonWebServices(this IServiceCollection services, string serviceTitle)
     {
-        services.AddControllers();
+        services.AddControllers(options =>
+        {
+            options.Filters.Add<Shared.Common.Filters.ValidationFilter>();
+        });
         services.AddEndpointsApiExplorer();
 
         services.AddSwaggerGen(c =>

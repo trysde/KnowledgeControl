@@ -16,3 +16,6 @@ public class NotFoundException(string message)
 
 public class ConflictException(string message)
     : AppException(message, HttpStatusCode.Conflict, "CONFLICT");
+
+public class ValidationException(IReadOnlyCollection<string> details)
+    : AppException("Ошибка валидации входных данных.", HttpStatusCode.BadRequest, "VALIDATION_ERROR", details);

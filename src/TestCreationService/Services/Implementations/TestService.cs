@@ -270,9 +270,9 @@ public class TestService(
     }
 
     public async Task<TestSnapshotResponse> GetSnapshotAsync(
-        Guid testUid,
-        bool includeCorrectAnswers = true,
-        CancellationToken cancellationToken = default)
+            Guid testUid,
+            bool includeCorrectAnswers = true,
+            CancellationToken cancellationToken = default)
     {
         var test = await dbContext.Tests
             .AsNoTracking()
@@ -283,6 +283,11 @@ public class TestService(
         if (test.IsHidden || test.Status == TestStatus.Blocked)
         {
             throw new ForbiddenException("Тест недоступен.");
+        }
+
+        if (!includeCorrectAnswers && (test.Status != TestStatus.Published || !test.IsPublic))
+        {
+            throw new ForbiddenException("Публичный снапшот доступен только для опубликованных публичных тестов.");
         }
 
         var questionSnapshots = new List<QuestionSnapshotResponse>();
@@ -298,7 +303,7 @@ public class TestService(
                 {
                     CorrectTextAnswer = null,
                     Options = deserialized.Options
-                        .Select(o => o with { IsCorrect = false })
+                        .Select(o => o with { IsCorrect = null })
                         .ToList()
                 };
             }
@@ -319,7 +324,6 @@ public class TestService(
             Status: test.Status.ToString(),
             Questions: questionSnapshots);
     }
-
     private async Task<Dictionary<Guid, Question>> LoadAndValidateQuestionsAsync(
         Guid authorUid,
         IReadOnlyList<TestQuestionItemRequest> items,

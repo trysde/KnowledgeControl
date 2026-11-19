@@ -81,6 +81,7 @@ builder.Services.AddScoped<IModerationService, ModerationService>();
 var app = builder.Build();
 
 await app.ApplyMigrationsAsync<TestCreationDbContext>();
+await app.SeedCategoriesAsync();
 
 app.UseCommonMiddleware(app.Environment);
 

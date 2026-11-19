@@ -1,18 +1,24 @@
-﻿namespace TestCreationService.Contracts.Tests;
+﻿using System.Text.Json.Serialization;
+
+namespace TestCreationService.Contracts.Tests;
 
 public record AnswerOptionSnapshotResponse(
     Guid Uid,
     string Text,
-    bool IsCorrect,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? IsCorrect,
     int Position);
 
 public record QuestionSnapshotResponse(
     Guid QuestionUid,
     string Title,
     string Text,
+    [property: JsonPropertyName("type")]
     string QuestionType,
     int OrderIndex,
     int Points,
+    [property: JsonPropertyName("correctText")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? CorrectTextAnswer,
     IReadOnlyList<AnswerOptionSnapshotResponse> Options);
 

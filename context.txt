@@ -485,21 +485,27 @@ public record TestResponse(
     DateTimeOffset UpdatedAt);
 
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Contracts\Tests\TestSnapshotResponse.cs ===
+using System.Text.Json.Serialization;
+
 namespace TestCreationService.Contracts.Tests;
 
 public record AnswerOptionSnapshotResponse(
     Guid Uid,
     string Text,
-    bool IsCorrect,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? IsCorrect,
     int Position);
 
 public record QuestionSnapshotResponse(
     Guid QuestionUid,
     string Title,
     string Text,
+    [property: JsonPropertyName("type")]
     string QuestionType,
     int OrderIndex,
     int Points,
+    [property: JsonPropertyName("correctText")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? CorrectTextAnswer,
     IReadOnlyList<AnswerOptionSnapshotResponse> Options);
 
@@ -542,6 +548,278 @@ public record UpdateTestRequest
     public DateTimeOffset? EndsAt { get; init; }
     public bool IsPublic { get; init; } = true;
     public required IReadOnlyList<TestQuestionItemRequest> Questions { get; init; }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Controllers\BaseApiController.cs ===
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Mvc;
+using Shared.Common.Exceptions;
+
+namespace TestCreationService.Controllers;
+
+[ApiController]
+public abstract class BaseApiController : ControllerBase
+{
+    protected Guid GetCurrentUserUid()
+    {
+        var subClaim = User.FindFirstValue(JwtRegisteredClaimNames.Sub)
+                       ?? User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (!Guid.TryParse(subClaim, out var userUid))
+        {
+            throw new UnauthorizedException("Некорректный идентификатор пользователя в токене.");
+        }
+
+        return userUid;
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Controllers\ModerationController.cs ===
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using TestCreationService.Contracts.Moderation;
+using TestCreationService.Services.Interfaces;
+
+namespace TestCreationService.Controllers;
+
+[Route("api/moderation")]
+[Authorize]
+public class ModerationController(IModerationService moderationService) : BaseApiController
+{
+    [HttpPost("report")]
+    [ProducesResponseType(typeof(ReportResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<ReportResponse>> Report(
+        [FromBody] ReportRequest request,
+        CancellationToken cancellationToken)
+    {
+        var reporterUid = GetCurrentUserUid();
+        var response = await moderationService.ReportAsync(reporterUid, request, cancellationToken);
+        return StatusCode(StatusCodes.Status201Created, response);
+    }
+
+    [HttpPost("hide/{testUid:guid}")]
+    [Authorize(Policy = "RequireModerator")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Hide(
+        [FromRoute] Guid testUid,
+        [FromQuery] string? comment,
+        CancellationToken cancellationToken)
+    {
+        var moderatorUid = GetCurrentUserUid();
+        await moderationService.HideAsync(testUid, moderatorUid, comment, cancellationToken);
+        return NoContent();
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Controllers\QuestionsController.cs ===
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using TestCreationService.Contracts.Questions;
+using TestCreationService.Services.Interfaces;
+
+namespace TestCreationService.Controllers;
+
+[Route("api/questions")]
+[Authorize]
+public class QuestionsController(IQuestionService questionService) : BaseApiController
+{
+    [HttpPost]
+    [ProducesResponseType(typeof(QuestionResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<QuestionResponse>> Create(
+        [FromBody] CreateQuestionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var authorUid = GetCurrentUserUid();
+        var response = await questionService.CreateAsync(authorUid, request, cancellationToken);
+        return CreatedAtAction(nameof(GetById), new { id = response.Uid }, response);
+    }
+
+    [HttpGet("my")]
+    [ProducesResponseType(typeof(IReadOnlyList<QuestionResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<ActionResult<IReadOnlyList<QuestionResponse>>> GetMy(CancellationToken cancellationToken)
+    {
+        var authorUid = GetCurrentUserUid();
+        var response = await questionService.GetMyAsync(authorUid, cancellationToken);
+        return Ok(response);
+    }
+
+    [HttpGet("{id:guid}")]
+    [ProducesResponseType(typeof(QuestionResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<QuestionResponse>> GetById(
+        [FromRoute] Guid id,
+        CancellationToken cancellationToken)
+    {
+        var requesterUid = GetCurrentUserUid();
+        var response = await questionService.GetByIdAsync(id, requesterUid, cancellationToken);
+        return Ok(response);
+    }
+
+    [HttpPut("{id:guid}")]
+    [ProducesResponseType(typeof(QuestionResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<QuestionResponse>> Update(
+        [FromRoute] Guid id,
+        [FromBody] UpdateQuestionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var authorUid = GetCurrentUserUid();
+        var response = await questionService.UpdateAsync(id, authorUid, request, cancellationToken);
+        return Ok(response);
+    }
+
+    [HttpDelete("{id:guid}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Delete(
+        [FromRoute] Guid id,
+        CancellationToken cancellationToken)
+    {
+        var authorUid = GetCurrentUserUid();
+        await questionService.DeleteAsync(id, authorUid, cancellationToken);
+        return NoContent();
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Controllers\TestsController.cs ===
+using System.Security.Cryptography;
+using System.Text;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using TestCreationService.Contracts.Tests;
+using TestCreationService.Services.Interfaces;
+
+namespace TestCreationService.Controllers;
+
+[Route("api/tests")]
+[Authorize]
+public class TestsController(
+    ITestService testService,
+    IConfiguration configuration) : BaseApiController
+{
+    public const string InternalApiKeyHeader = "X-Internal-Api-Key";
+
+    [HttpPost]
+    [ProducesResponseType(typeof(TestResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<TestResponse>> Create(
+        [FromBody] CreateTestRequest request,
+        CancellationToken cancellationToken)
+    {
+        var authorUid = GetCurrentUserUid();
+        var response = await testService.CreateAsync(authorUid, request, cancellationToken);
+        return StatusCode(StatusCodes.Status201Created, response);
+    }
+
+    [HttpPut("{uid:guid}")]
+    [ProducesResponseType(typeof(TestResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<TestResponse>> Update(
+        [FromRoute] Guid uid,
+        [FromBody] UpdateTestRequest request,
+        CancellationToken cancellationToken)
+    {
+        var authorUid = GetCurrentUserUid();
+        var response = await testService.UpdateAsync(uid, authorUid, request, cancellationToken);
+        return Ok(response);
+    }
+
+    [HttpPost("{uid:guid}/publish")]
+    [ProducesResponseType(typeof(PublishTestResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<PublishTestResponse>> Publish(
+        [FromRoute] Guid uid,
+        CancellationToken cancellationToken)
+    {
+        var authorUid = GetCurrentUserUid();
+        var response = await testService.PublishAsync(uid, authorUid, cancellationToken);
+        return Ok(response);
+    }
+
+    [HttpPost("{uid:guid}/unpublish")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Unpublish(
+        [FromRoute] Guid uid,
+        CancellationToken cancellationToken)
+    {
+        var authorUid = GetCurrentUserUid();
+        await testService.UnpublishAsync(uid, authorUid, cancellationToken);
+        return NoContent();
+    }
+
+    [HttpGet("my")]
+    [ProducesResponseType(typeof(IReadOnlyList<TestResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<ActionResult<IReadOnlyList<TestResponse>>> GetMy(CancellationToken cancellationToken)
+    {
+        var authorUid = GetCurrentUserUid();
+        var response = await testService.GetMyAsync(authorUid, cancellationToken);
+        return Ok(response);
+    }
+
+    [HttpGet("{uid:guid}/snapshot")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(TestSnapshotResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<TestSnapshotResponse>> GetSnapshot(
+        [FromRoute] Guid uid,
+        CancellationToken cancellationToken)
+    {
+        var includeCorrectAnswers = HasValidInternalApiKey();
+        var response = await testService.GetSnapshotAsync(uid, includeCorrectAnswers, cancellationToken);
+        return Ok(response);
+    }
+
+    private bool HasValidInternalApiKey()
+    {
+        var configuredKey = configuration["InternalAuth:ApiKey"];
+        if (string.IsNullOrWhiteSpace(configuredKey))
+            return false;
+
+        if (!Request.Headers.TryGetValue(InternalApiKeyHeader, out var providedHeader))
+            return false;
+
+        var providedKey = providedHeader.ToString();
+        if (string.IsNullOrWhiteSpace(providedKey))
+            return false;
+
+        return CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(configuredKey),
+            Encoding.UTF8.GetBytes(providedKey));
+    }
 }
 
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Data\TestCreationDbContext.cs ===
@@ -1796,9 +2074,9 @@ public class TestService(
     }
 
     public async Task<TestSnapshotResponse> GetSnapshotAsync(
-        Guid testUid,
-        bool includeCorrectAnswers = true,
-        CancellationToken cancellationToken = default)
+            Guid testUid,
+            bool includeCorrectAnswers = true,
+            CancellationToken cancellationToken = default)
     {
         var test = await dbContext.Tests
             .AsNoTracking()
@@ -1809,6 +2087,11 @@ public class TestService(
         if (test.IsHidden || test.Status == TestStatus.Blocked)
         {
             throw new ForbiddenException("Тест недоступен.");
+        }
+
+        if (!includeCorrectAnswers && (test.Status != TestStatus.Published || !test.IsPublic))
+        {
+            throw new ForbiddenException("Публичный снапшот доступен только для опубликованных публичных тестов.");
         }
 
         var questionSnapshots = new List<QuestionSnapshotResponse>();
@@ -1824,7 +2107,7 @@ public class TestService(
                 {
                     CorrectTextAnswer = null,
                     Options = deserialized.Options
-                        .Select(o => o with { IsCorrect = false })
+                        .Select(o => o with { IsCorrect = null })
                         .ToList()
                 };
             }
@@ -1845,7 +2128,6 @@ public class TestService(
             Status: test.Status.ToString(),
             Questions: questionSnapshots);
     }
-
     private async Task<Dictionary<Guid, Question>> LoadAndValidateQuestionsAsync(
         Guid authorUid,
         IReadOnlyList<TestQuestionItemRequest> items,
@@ -2279,12 +2561,21 @@ public class UpdateTestRequestValidator : AbstractValidator<UpdateTestRequest>
   "ConnectionStrings": {
     "DefaultConnection": "Host=localhost;Port=5433;Database=KnowledgeDb;Username=postgres;Password=CHANGE_ME"
   },
+  "Jwt": {
+    "SecretKey": "CHANGE_ME_SUPER_SECRET_KEY_AT_LEAST_32_CHARS",
+    "Issuer": "KnowledgeControl.UserService",
+    "Audience": "KnowledgeControl.Services",
+    "ExpirationMinutes": 60
+  },
+  "InternalAuth": {
+    "ApiKey": "CHANGE_ME_INTERNAL_API_KEY"
+  },
   "RabbitMq": {
     "Host": "localhost",
     "Port": 5672,
     "VirtualHost": "/",
     "Username": "admin",
-    "Password": "kc_rabbit_local_2026"
+    "Password": "CHANGE_ME"
   },
   "Logging": {
     "LogLevel": {
@@ -2296,14 +2587,18 @@ public class UpdateTestRequestValidator : AbstractValidator<UpdateTestRequest>
 }
 
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Program.cs ===
+using System.Text;
 using FluentValidation;
 using MassTransit;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using Serilog;
 using Shared.Common.Extensions;
 using TestCreationService.Data;
 using TestCreationService.Services.Implementations;
 using TestCreationService.Services.Interfaces;
+using UserService.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -2319,6 +2614,34 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
 builder.Services.AddDbContext<TestCreationDbContext>(options =>
     options.UseNpgsql(connectionString, npgsql =>
         npgsql.MigrationsHistoryTable("__EFMigrationsHistory", "test_creation_schema")));
+
+var jwtSection = builder.Configuration.GetSection(JwtOptions.SectionName);
+builder.Services.Configure<JwtOptions>(jwtSection);
+
+var jwtOptions = jwtSection.Get<JwtOptions>()
+    ?? throw new InvalidOperationException("JWT configuration section is missing.");
+
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.MapInboundClaims = false;
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = jwtOptions.Issuer,
+            ValidateAudience = true,
+            ValidAudience = jwtOptions.Audience,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.SecretKey)),
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.Zero
+        };
+    });
+
+builder.Services.AddAuthorizationBuilder()
+    .AddPolicy("RequireModerator", policy =>
+        policy.RequireClaim("is_moderator", "true"));
 
 builder.Services.AddMassTransit(x =>
 {
@@ -2349,7 +2672,10 @@ var app = builder.Build();
 await app.ApplyMigrationsAsync<TestCreationDbContext>();
 
 app.UseCommonMiddleware(app.Environment);
+
+app.UseAuthentication();
 app.UseAuthorization();
+
 app.MapControllers();
 
 app.Run();
@@ -2366,6 +2692,7 @@ app.Run();
   <ItemGroup>
     <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.2.0" />
     <PackageReference Include="MassTransit.RabbitMQ" Version="8.4.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.3" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="11.0.0" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.3">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>

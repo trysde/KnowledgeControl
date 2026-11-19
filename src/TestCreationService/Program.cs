@@ -1,8 +1,11 @@
 using FluentValidation;
+using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
 using Shared.Common.Extensions;
 using TestCreationService.Data;
+using TestCreationService.Services.Implementations;
+using TestCreationService.Services.Interfaces;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -18,6 +21,30 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
 builder.Services.AddDbContext<TestCreationDbContext>(options =>
     options.UseNpgsql(connectionString, npgsql =>
         npgsql.MigrationsHistoryTable("__EFMigrationsHistory", "test_creation_schema")));
+
+builder.Services.AddMassTransit(x =>
+{
+    x.UsingRabbitMq((context, cfg) =>
+    {
+        var rabbitSection = builder.Configuration.GetSection("RabbitMq");
+        var host = rabbitSection["Host"] ?? "localhost";
+        var port = rabbitSection.GetValue<ushort?>("Port") ?? 5672;
+        var virtualHost = rabbitSection["VirtualHost"] ?? "/";
+        var username = rabbitSection["Username"] ?? "guest";
+        var password = rabbitSection["Password"] ?? "guest";
+
+        cfg.Host(host, port, virtualHost, h =>
+        {
+            h.Username(username);
+            h.Password(password);
+        });
+    });
+});
+
+builder.Services.AddScoped<IMessagePublisher, RabbitMqMessagePublisher>();
+builder.Services.AddScoped<IQuestionService, QuestionService>();
+builder.Services.AddScoped<ITestService, TestService>();
+builder.Services.AddScoped<IModerationService, ModerationService>();
 
 var app = builder.Build();
 

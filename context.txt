@@ -1,0 +1,1993 @@
+﻿=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\Shared.Common\Exceptions\AppException.cs ===
+using System.Net;
+
+namespace Shared.Common.Exceptions;
+
+public abstract class AppException(
+    string message,
+    HttpStatusCode statusCode,
+    string errorCode,
+    IReadOnlyCollection<string>? details = null) : Exception(message)
+{
+    public HttpStatusCode StatusCode { get; } = statusCode;
+    public string ErrorCode { get; } = errorCode;
+    public IReadOnlyCollection<string> Details { get; } = details ?? Array.Empty<string>();
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\Shared.Common\Exceptions\HttpExceptions.cs ===
+using System.Net;
+
+namespace Shared.Common.Exceptions;
+
+public class BadRequestException(string message, IReadOnlyCollection<string>? details = null)
+    : AppException(message, HttpStatusCode.BadRequest, "BAD_REQUEST", details);
+
+public class UnauthorizedException(string message)
+    : AppException(message, HttpStatusCode.Unauthorized, "UNAUTHORIZED");
+
+public class ForbiddenException(string message)
+    : AppException(message, HttpStatusCode.Forbidden, "FORBIDDEN");
+
+public class NotFoundException(string message)
+    : AppException(message, HttpStatusCode.NotFound, "NOT_FOUND");
+
+public class ConflictException(string message)
+    : AppException(message, HttpStatusCode.Conflict, "CONFLICT");
+
+public class ValidationException(IReadOnlyCollection<string> details)
+    : AppException("Ошибка валидации входных данных.", HttpStatusCode.BadRequest, "VALIDATION_ERROR", details);
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\Shared.Common\Extensions\CommonServiceExtensions.cs ===
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.OpenApi;
+using Serilog;
+using Shared.Common.Middleware;
+
+namespace Shared.Common.Extensions;
+
+public static class CommonServiceExtensions
+{
+    public static void ConfigureSerilog(IConfiguration configuration, string serviceName)
+    {
+        Log.Logger = new LoggerConfiguration()
+            .ReadFrom.Configuration(configuration)
+            .Enrich.FromLogContext()
+            .Enrich.WithProperty("ServiceName", serviceName)
+            .WriteTo.Console()
+            .WriteTo.File($"logs/service-{serviceName.ToLower()}.log", rollingInterval: RollingInterval.Day)
+            .CreateLogger();
+    }
+
+    public static IServiceCollection AddCommonWebServices(this IServiceCollection services, string serviceTitle)
+    {
+        services.AddControllers(options =>
+        {
+            options.Filters.Add<Shared.Common.Filters.ValidationFilter>();
+        });
+        services.AddEndpointsApiExplorer();
+
+        services.AddSwaggerGen(c =>
+        {
+            c.SwaggerDoc("v1", new OpenApiInfo
+            {
+                Title = serviceTitle,
+                Version = "v1"
+            });
+
+            c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+            {
+                Name = "Authorization",
+                Type = SecuritySchemeType.Http,
+                Scheme = "bearer",
+                BearerFormat = "JWT",
+                In = ParameterLocation.Header,
+                Description = "Введите JWT-токен (без слова Bearer — оно подставится автоматически)."
+            });
+
+            c.AddSecurityRequirement(document => new OpenApiSecurityRequirement
+            {
+                [new OpenApiSecuritySchemeReference("Bearer", document)] = []
+            });
+        });
+
+        return services;
+    }
+
+    public static async Task ApplyMigrationsAsync<TContext>(this WebApplication app) where TContext : DbContext
+    {
+        var autoMigrate = app.Environment.IsDevelopment()
+                          || string.Equals(app.Configuration["AUTO_MIGRATE"], "true", StringComparison.OrdinalIgnoreCase);
+
+        if (!autoMigrate)
+            return;
+
+        using var scope = app.Services.CreateScope();
+        var logger = scope.ServiceProvider.GetRequiredService<ILogger<TContext>>();
+        var dbContext = scope.ServiceProvider.GetRequiredService<TContext>();
+
+        try
+        {
+            logger.LogInformation("Applying database migrations for {DbContext}...", typeof(TContext).Name);
+            await dbContext.Database.MigrateAsync();
+            logger.LogInformation("Database migrations for {DbContext} applied successfully.", typeof(TContext).Name);
+        }
+        catch (Exception ex)
+        {
+            logger.LogCritical(ex, "An error occurred while applying migrations for {DbContext}.", typeof(TContext).Name);
+            throw;
+        }
+    }
+
+    public static IApplicationBuilder UseCommonMiddleware(this IApplicationBuilder app, IWebHostEnvironment env)
+    {
+        app.UseMiddleware<ExceptionHandlingMiddleware>();
+
+        if (env.IsDevelopment())
+        {
+            app.UseSwagger();
+            app.UseSwaggerUI(c =>
+            {
+                c.SwaggerEndpoint("/swagger/v1/swagger.json", $"{env.ApplicationName} V1");
+            });
+        }
+
+        return app;
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\Shared.Common\Filters\ValidationFilter.cs ===
+using FluentValidation;
+using Microsoft.AspNetCore.Mvc.Filters;
+using ValidationException = Shared.Common.Exceptions.ValidationException;
+
+namespace Shared.Common.Filters;
+
+public class ValidationFilter : IAsyncActionFilter
+{
+    public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
+    {
+        foreach (var argument in context.ActionArguments.Values)
+        {
+            if (argument is null)
+                continue;
+
+            var validatorType = typeof(IValidator<>).MakeGenericType(argument.GetType());
+            if (context.HttpContext.RequestServices.GetService(validatorType) is not IValidator validator)
+                continue;
+
+            var validationContext = new ValidationContext<object>(argument);
+            var result = await validator.ValidateAsync(validationContext, context.HttpContext.RequestAborted);
+
+            if (!result.IsValid)
+            {
+                var errors = result.Errors
+                    .Select(e => $"{e.PropertyName}: {e.ErrorMessage}")
+                    .ToArray();
+
+                throw new ValidationException(errors);
+            }
+        }
+
+        await next();
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\Shared.Common\Middleware\ExceptionHandlingMiddleware.cs ===
+using System.Net;
+using System.Text.Json;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
+using Shared.Common.Exceptions;
+
+namespace Shared.Common.Middleware;
+
+public class ExceptionHandlingMiddleware(
+    RequestDelegate next,
+    ILogger<ExceptionHandlingMiddleware> logger)
+{
+    public async Task InvokeAsync(HttpContext context)
+    {
+        try
+        {
+            await next(context);
+        }
+        catch (AppException ex)
+        {
+            logger.LogWarning("Application error ({ErrorCode}): {Message}", ex.ErrorCode, ex.Message);
+            await WriteErrorResponseAsync(context, ex.StatusCode, ex.ErrorCode, ex.Message, ex.Details);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "An unhandled exception occurred: {Message}", ex.Message);
+            await WriteErrorResponseAsync(
+                context,
+                HttpStatusCode.InternalServerError,
+                "INTERNAL_SERVER_ERROR",
+                "An internal server error occurred.",
+                Array.Empty<string>());
+        }
+    }
+
+    private static Task WriteErrorResponseAsync(
+        HttpContext context,
+        HttpStatusCode statusCode,
+        string code,
+        string message,
+        IReadOnlyCollection<string> details)
+    {
+        context.Response.ContentType = "application/json";
+        context.Response.StatusCode = (int)statusCode;
+
+        var response = new
+        {
+            error = new
+            {
+                code,
+                message,
+                details
+            }
+        };
+
+        var json = JsonSerializer.Serialize(response);
+        return context.Response.WriteAsync(json);
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\Shared.Common\Options\JwtOptions.cs ===
+namespace UserService.Options;
+
+public class JwtOptions
+{
+    public const string SectionName = "Jwt";
+
+    public string SecretKey { get; set; } = string.Empty;
+    public string Issuer { get; set; } = string.Empty;
+    public string Audience { get; set; } = string.Empty;
+    public int ExpirationMinutes { get; set; } = 60;
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\Shared.Common\Shared.Common.csproj ===
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.2.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.3" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.3" />
+    <PackageReference Include="Microsoft.OpenApi" Version="3.11.0" />
+    <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="11.0.1" />
+  </ItemGroup>
+
+</Project>
+
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\Shared.Contracts\Shared.Contracts.csproj ===
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Folder Include="Events\" />
+  </ItemGroup>
+
+</Project>
+
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Data\TestCreationDbContext.cs ===
+using Microsoft.EntityFrameworkCore;
+using TestCreationService.Domain.Entities;
+using TestCreationService.Domain.Enums;
+
+namespace TestCreationService.Data;
+
+public class TestCreationDbContext : DbContext
+{
+    public TestCreationDbContext(DbContextOptions<TestCreationDbContext> options) : base(options)
+    {
+    }
+
+    public DbSet<Category> Categories => Set<Category>();
+    public DbSet<Tag> Tags => Set<Tag>();
+    public DbSet<Question> Questions => Set<Question>();
+    public DbSet<AnswerOption> AnswerOptions => Set<AnswerOption>();
+    public DbSet<QuestionTag> QuestionTags => Set<QuestionTag>();
+    public DbSet<Test> Tests => Set<Test>();
+    public DbSet<TestQuestion> TestQuestions => Set<TestQuestion>();
+    public DbSet<ModerationReport> ModerationReports => Set<ModerationReport>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.HasDefaultSchema("test_creation_schema");
+
+        modelBuilder.Entity<Category>(entity =>
+        {
+            entity.ToTable("categories");
+
+            entity.HasKey(c => c.Id);
+            entity.Property(c => c.Id).HasColumnName("id");
+
+            entity.Property(c => c.Uid)
+                .HasColumnName("uid")
+                .IsRequired();
+            entity.HasIndex(c => c.Uid).IsUnique();
+
+            entity.Property(c => c.Name)
+                .HasColumnName("name")
+                .HasMaxLength(100)
+                .IsRequired();
+            entity.HasIndex(c => c.Name).IsUnique();
+
+            entity.Property(c => c.Description)
+                .HasColumnName("description")
+                .HasMaxLength(500);
+        });
+
+        modelBuilder.Entity<Tag>(entity =>
+        {
+            entity.ToTable("tags");
+
+            entity.HasKey(t => t.Id);
+            entity.Property(t => t.Id).HasColumnName("id");
+
+            entity.Property(t => t.Uid)
+                .HasColumnName("uid")
+                .IsRequired();
+            entity.HasIndex(t => t.Uid).IsUnique();
+
+            entity.Property(t => t.Name)
+                .HasColumnName("name")
+                .HasMaxLength(50)
+                .IsRequired();
+            entity.HasIndex(t => t.Name).IsUnique();
+        });
+
+        modelBuilder.Entity<Question>(entity =>
+        {
+            entity.ToTable("questions");
+
+            entity.HasKey(q => q.Id);
+            entity.Property(q => q.Id).HasColumnName("id");
+
+            entity.Property(q => q.Uid)
+                .HasColumnName("uid")
+                .IsRequired();
+            entity.HasIndex(q => q.Uid).IsUnique();
+
+            entity.Property(q => q.AuthorUid)
+                .HasColumnName("author_uid")
+                .IsRequired();
+            entity.HasIndex(q => q.AuthorUid);
+
+            entity.Property(q => q.CategoryId)
+                .HasColumnName("category_id")
+                .IsRequired();
+
+            entity.Property(q => q.Text)
+                .HasColumnName("text")
+                .HasMaxLength(2000)
+                .IsRequired();
+
+            entity.Property(q => q.QuestionType)
+                .HasColumnName("question_type")
+                .HasConversion<string>()
+                .HasMaxLength(32)
+                .IsRequired();
+
+            entity.Property(q => q.CorrectTextAnswer)
+                .HasColumnName("correct_text_answer")
+                .HasMaxLength(500);
+
+            entity.Property(q => q.IsPublic)
+                .HasColumnName("is_public")
+                .HasDefaultValue(true)
+                .IsRequired();
+
+            entity.Property(q => q.IsBlocked)
+                .HasColumnName("is_blocked")
+                .HasDefaultValue(false)
+                .IsRequired();
+
+            entity.Property(q => q.CreatedAt)
+                .HasColumnName("created_at")
+                .IsRequired();
+
+            entity.Property(q => q.UpdatedAt)
+                .HasColumnName("updated_at")
+                .IsRequired();
+
+            entity.HasIndex(q => new { q.CategoryId, q.IsPublic, q.IsBlocked });
+
+            entity.HasOne(q => q.Category)
+                .WithMany(c => c.Questions)
+                .HasForeignKey(q => q.CategoryId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<AnswerOption>(entity =>
+        {
+            entity.ToTable("answer_options");
+
+            entity.HasKey(a => a.Id);
+            entity.Property(a => a.Id).HasColumnName("id");
+
+            entity.Property(a => a.Uid)
+                .HasColumnName("uid")
+                .IsRequired();
+            entity.HasIndex(a => a.Uid).IsUnique();
+
+            entity.Property(a => a.QuestionId)
+                .HasColumnName("question_id")
+                .IsRequired();
+
+            entity.Property(a => a.Text)
+                .HasColumnName("text")
+                .HasMaxLength(500)
+                .IsRequired();
+
+            entity.Property(a => a.IsCorrect)
+                .HasColumnName("is_correct")
+                .HasDefaultValue(false)
+                .IsRequired();
+
+            entity.Property(a => a.OrderIndex)
+                .HasColumnName("order_index")
+                .IsRequired();
+
+            entity.HasIndex(a => new { a.QuestionId, a.OrderIndex });
+
+            entity.HasOne(a => a.Question)
+                .WithMany(q => q.AnswerOptions)
+                .HasForeignKey(a => a.QuestionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<QuestionTag>(entity =>
+        {
+            entity.ToTable("question_tags");
+
+            entity.HasKey(qt => new { qt.QuestionId, qt.TagId });
+
+            entity.Property(qt => qt.QuestionId).HasColumnName("question_id");
+            entity.Property(qt => qt.TagId).HasColumnName("tag_id");
+
+            entity.HasOne(qt => qt.Question)
+                .WithMany(q => q.QuestionTags)
+                .HasForeignKey(qt => qt.QuestionId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(qt => qt.Tag)
+                .WithMany(t => t.QuestionTags)
+                .HasForeignKey(qt => qt.TagId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<Test>(entity =>
+        {
+            entity.ToTable("tests");
+
+            entity.HasKey(t => t.Id);
+            entity.Property(t => t.Id).HasColumnName("id");
+
+            entity.Property(t => t.Uid)
+                .HasColumnName("uid")
+                .IsRequired();
+            entity.HasIndex(t => t.Uid).IsUnique();
+
+            entity.Property(t => t.AuthorUid)
+                .HasColumnName("author_uid")
+                .IsRequired();
+            entity.HasIndex(t => t.AuthorUid);
+
+            entity.Property(t => t.CategoryId)
+                .HasColumnName("category_id")
+                .IsRequired();
+
+            entity.Property(t => t.Title)
+                .HasColumnName("title")
+                .HasMaxLength(200)
+                .IsRequired();
+
+            entity.Property(t => t.Description)
+                .HasColumnName("description")
+                .HasMaxLength(2000);
+
+            entity.Property(t => t.TimeLimitSeconds)
+                .HasColumnName("time_limit_seconds");
+
+            entity.Property(t => t.MaxAttempts)
+                .HasColumnName("max_attempts");
+
+            entity.Property(t => t.IsPublic)
+                .HasColumnName("is_public")
+                .HasDefaultValue(true)
+                .IsRequired();
+
+            entity.Property(t => t.Status)
+                .HasColumnName("status")
+                .HasConversion<string>()
+                .HasMaxLength(32)
+                .HasDefaultValue(TestStatus.Draft)
+                .IsRequired();
+
+            entity.Property(t => t.CreatedAt)
+                .HasColumnName("created_at")
+                .IsRequired();
+
+            entity.Property(t => t.UpdatedAt)
+                .HasColumnName("updated_at")
+                .IsRequired();
+
+            entity.HasIndex(t => new { t.CategoryId, t.Status, t.IsPublic });
+
+            entity.HasOne(t => t.Category)
+                .WithMany(c => c.Tests)
+                .HasForeignKey(t => t.CategoryId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<TestQuestion>(entity =>
+        {
+            entity.ToTable("test_questions");
+
+            entity.HasKey(tq => new { tq.TestId, tq.QuestionId });
+
+            entity.Property(tq => tq.TestId).HasColumnName("test_id");
+            entity.Property(tq => tq.QuestionId).HasColumnName("question_id");
+
+            entity.Property(tq => tq.OrderIndex)
+                .HasColumnName("order_index")
+                .IsRequired();
+
+            entity.Property(tq => tq.Points)
+                .HasColumnName("points")
+                .HasDefaultValue(1)
+                .IsRequired();
+
+            entity.HasIndex(tq => new { tq.TestId, tq.OrderIndex });
+
+            entity.HasOne(tq => tq.Test)
+                .WithMany(t => t.TestQuestions)
+                .HasForeignKey(tq => tq.TestId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(tq => tq.Question)
+                .WithMany(q => q.TestQuestions)
+                .HasForeignKey(tq => tq.QuestionId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<ModerationReport>(entity =>
+        {
+            entity.ToTable("moderation_reports");
+
+            entity.HasKey(r => r.Id);
+            entity.Property(r => r.Id).HasColumnName("id");
+
+            entity.Property(r => r.Uid)
+                .HasColumnName("uid")
+                .IsRequired();
+            entity.HasIndex(r => r.Uid).IsUnique();
+
+            entity.Property(r => r.ReporterUid)
+                .HasColumnName("reporter_uid")
+                .IsRequired();
+
+            entity.Property(r => r.TargetType)
+                .HasColumnName("target_type")
+                .HasConversion<string>()
+                .HasMaxLength(32)
+                .IsRequired();
+
+            entity.Property(r => r.TargetUid)
+                .HasColumnName("target_uid")
+                .IsRequired();
+
+            entity.Property(r => r.Reason)
+                .HasColumnName("reason")
+                .HasMaxLength(1000)
+                .IsRequired();
+
+            entity.Property(r => r.Status)
+                .HasColumnName("status")
+                .HasConversion<string>()
+                .HasMaxLength(32)
+                .HasDefaultValue(ModerationReportStatus.Pending)
+                .IsRequired();
+
+            entity.Property(r => r.ModeratorUid)
+                .HasColumnName("moderator_uid");
+
+            entity.Property(r => r.ModeratorComment)
+                .HasColumnName("moderator_comment")
+                .HasMaxLength(1000);
+
+            entity.Property(r => r.CreatedAt)
+                .HasColumnName("created_at")
+                .IsRequired();
+
+            entity.Property(r => r.ResolvedAt)
+                .HasColumnName("resolved_at");
+
+            entity.HasIndex(r => new { r.Status, r.CreatedAt });
+            entity.HasIndex(r => new { r.TargetType, r.TargetUid });
+        });
+
+        base.OnModelCreating(modelBuilder);
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Domain\Entities\AnswerOption.cs ===
+namespace TestCreationService.Domain.Entities;
+
+public class AnswerOption
+{
+    public long Id { get; set; }
+    public Guid Uid { get; set; } = Guid.NewGuid();
+    public long QuestionId { get; set; }
+    public string Text { get; set; } = string.Empty;
+    public bool IsCorrect { get; set; }
+    public int OrderIndex { get; set; }
+
+    public Question Question { get; set; } = null!;
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Domain\Entities\Category.cs ===
+namespace TestCreationService.Domain.Entities;
+
+public class Category
+{
+    public long Id { get; set; }
+    public Guid Uid { get; set; } = Guid.NewGuid();
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+
+    public ICollection<Question> Questions { get; set; } = new List<Question>();
+    public ICollection<Test> Tests { get; set; } = new List<Test>();
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Domain\Entities\ModerationReport.cs ===
+using TestCreationService.Domain.Enums;
+
+namespace TestCreationService.Domain.Entities;
+
+public class ModerationReport
+{
+    public long Id { get; set; }
+    public Guid Uid { get; set; } = Guid.NewGuid();
+    public Guid ReporterUid { get; set; }
+    public ModerationTargetType TargetType { get; set; }
+    public Guid TargetUid { get; set; }
+    public string Reason { get; set; } = string.Empty;
+    public ModerationReportStatus Status { get; set; } = ModerationReportStatus.Pending;
+    public Guid? ModeratorUid { get; set; }
+    public string? ModeratorComment { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? ResolvedAt { get; set; }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Domain\Entities\Question.cs ===
+using TestCreationService.Domain.Enums;
+
+namespace TestCreationService.Domain.Entities;
+
+public class Question
+{
+    public long Id { get; set; }
+    public Guid Uid { get; set; } = Guid.NewGuid();
+    public Guid AuthorUid { get; set; }
+    public long CategoryId { get; set; }
+    public string Text { get; set; } = string.Empty;
+    public QuestionType QuestionType { get; set; }
+    public string? CorrectTextAnswer { get; set; }
+    public bool IsPublic { get; set; } = true;
+    public bool IsBlocked { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+
+    public Category Category { get; set; } = null!;
+    public ICollection<AnswerOption> AnswerOptions { get; set; } = new List<AnswerOption>();
+    public ICollection<QuestionTag> QuestionTags { get; set; } = new List<QuestionTag>();
+    public ICollection<TestQuestion> TestQuestions { get; set; } = new List<TestQuestion>();
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Domain\Entities\QuestionTag.cs ===
+namespace TestCreationService.Domain.Entities;
+
+public class QuestionTag
+{
+    public long QuestionId { get; set; }
+    public long TagId { get; set; }
+
+    public Question Question { get; set; } = null!;
+    public Tag Tag { get; set; } = null!;
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Domain\Entities\Tag.cs ===
+namespace TestCreationService.Domain.Entities;
+
+public class Tag
+{
+    public long Id { get; set; }
+    public Guid Uid { get; set; } = Guid.NewGuid();
+    public string Name { get; set; } = string.Empty;
+
+    public ICollection<QuestionTag> QuestionTags { get; set; } = new List<QuestionTag>();
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Domain\Entities\Test.cs ===
+using TestCreationService.Domain.Enums;
+
+namespace TestCreationService.Domain.Entities;
+
+public class Test
+{
+    public long Id { get; set; }
+    public Guid Uid { get; set; } = Guid.NewGuid();
+    public Guid AuthorUid { get; set; }
+    public long CategoryId { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public int? TimeLimitSeconds { get; set; }
+    public int? MaxAttempts { get; set; }
+    public bool IsPublic { get; set; } = true;
+    public TestStatus Status { get; set; } = TestStatus.Draft;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+
+    public Category Category { get; set; } = null!;
+    public ICollection<TestQuestion> TestQuestions { get; set; } = new List<TestQuestion>();
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Domain\Entities\TestQuestion.cs ===
+namespace TestCreationService.Domain.Entities;
+
+public class TestQuestion
+{
+    public long TestId { get; set; }
+    public long QuestionId { get; set; }
+    public int OrderIndex { get; set; }
+    public int Points { get; set; } = 1;
+
+    public Test Test { get; set; } = null!;
+    public Question Question { get; set; } = null!;
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Domain\Enums\ModerationReportStatus.cs ===
+namespace TestCreationService.Domain.Enums;
+
+public enum ModerationReportStatus
+{
+    Pending,
+    Approved,
+    Rejected
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Domain\Enums\ModerationTargetType.cs ===
+namespace TestCreationService.Domain.Enums;
+
+public enum ModerationTargetType
+{
+    Question,
+    Test
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Domain\Enums\QuestionType.cs ===
+namespace TestCreationService.Domain.Enums;
+
+public enum QuestionType
+{
+    SingleChoice,
+    MultipleChoice,
+    TextInput
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Domain\Enums\TestStatus.cs ===
+namespace TestCreationService.Domain.Enums;
+
+public enum TestStatus
+{
+    Draft,
+    Published,
+    Archived,
+    Blocked
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\appsettings.json ===
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Host=localhost;Port=5432;Database=KnowledgeDb;Username=postgres;Password=CHANGE_ME"
+  },
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*"
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Program.cs ===
+using FluentValidation;
+using Microsoft.EntityFrameworkCore;
+using Serilog;
+using Shared.Common.Extensions;
+using TestCreationService.Data;
+
+var builder = WebApplication.CreateBuilder(args);
+
+CommonServiceExtensions.ConfigureSerilog(builder.Configuration, "TestCreationService");
+builder.Host.UseSerilog();
+
+builder.Services.AddCommonWebServices("Test Creation Service API");
+builder.Services.AddValidatorsFromAssembly(typeof(Program).Assembly);
+
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
+    ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is not configured.");
+
+builder.Services.AddDbContext<TestCreationDbContext>(options =>
+    options.UseNpgsql(connectionString, npgsql =>
+        npgsql.MigrationsHistoryTable("__EFMigrationsHistory", "test_creation_schema")));
+
+var app = builder.Build();
+
+await app.ApplyMigrationsAsync<TestCreationDbContext>();
+
+app.UseCommonMiddleware(app.Environment);
+app.UseAuthorization();
+app.MapControllers();
+
+app.Run();
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\TestCreationService.csproj ===
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.2.0" />
+    <PackageReference Include="MassTransit.RabbitMQ" Version="8.4.0" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="11.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.3">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+    <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="11.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Shared.Contracts\Shared.Contracts.csproj" />
+    <ProjectReference Include="..\Shared.Common\Shared.Common.csproj" />
+  </ItemGroup>
+
+</Project>
+
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\appsettings.json ===
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Host=localhost;Port=5432;Database=KnowledgeDb;Username=postgres;Password=CHANGE_ME"
+  },
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*"
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Program.cs ===
+using FluentValidation;
+using Serilog;
+using Shared.Common.Extensions;
+
+var builder = WebApplication.CreateBuilder(args);
+
+CommonServiceExtensions.ConfigureSerilog(builder.Configuration, "TestTakingService");
+builder.Host.UseSerilog();
+
+builder.Services.AddCommonWebServices("Test Taking Service API");
+builder.Services.AddValidatorsFromAssembly(typeof(Program).Assembly);
+
+var app = builder.Build();
+
+app.UseCommonMiddleware(app.Environment);
+app.UseHttpsRedirection();
+app.UseAuthorization();
+app.MapControllers();
+
+app.Run();
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\TestTakingService.csproj ===
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.2.0" />
+    <PackageReference Include="MassTransit.RabbitMQ" Version="8.4.0" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="11.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.3">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+    <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="11.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Shared.Contracts\Shared.Contracts.csproj" />
+    <ProjectReference Include="..\Shared.Common\Shared.Common.csproj" />
+  </ItemGroup>
+
+</Project>
+
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Contracts\Auth\LoginRequest.cs ===
+namespace UserService.Contracts.Auth;
+
+public record LoginRequest
+{
+    public required string Email { get; init; }
+    public required string Password { get; init; }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Contracts\Auth\LoginResponse.cs ===
+namespace UserService.Contracts.Auth;
+
+public record LoginResponse(Guid Uid, string Token);
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Contracts\Auth\RegisterRequest.cs ===
+namespace UserService.Contracts.Auth;
+
+public record RegisterRequest
+{
+    public required string Nickname { get; init; }
+    public required string Email { get; init; }
+    public required string Password { get; init; }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Contracts\Auth\RegisterResponse.cs ===
+namespace UserService.Contracts.Auth;
+
+public record RegisterResponse(Guid Uid, string Token);
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Contracts\Bans\BanRequest.cs ===
+namespace UserService.Contracts.Bans;
+
+public record BanRequest
+{
+    public required Guid UserUid { get; init; }
+    public required string Reason { get; init; }
+    public DateTimeOffset? ExpiresAt { get; init; }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Contracts\Users\ChangePasswordRequest.cs ===
+namespace UserService.Contracts.Users;
+
+public record ChangePasswordRequest
+{
+    public required string CurrentPassword { get; init; }
+    public required string NewPassword { get; init; }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Contracts\Users\UpdateNicknameRequest.cs ===
+namespace UserService.Contracts.Users;
+
+public record UpdateNicknameRequest
+{
+    public required string NewNickname { get; init; }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Contracts\Users\UserInfoResponse.cs ===
+namespace UserService.Contracts.Users;
+
+public record UserInfoResponse(
+    Guid Uid,
+    string Nickname,
+    string Email,
+    bool IsModerator,
+    DateTimeOffset CreatedAt);
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Controllers\AuthController.cs ===
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using UserService.Contracts.Auth;
+using UserService.Contracts.Users;
+using UserService.Services.Interfaces;
+
+namespace UserService.Controllers;
+
+[Route("api/auth")]
+public class AuthController(IAuthService authService) : BaseApiController
+{
+    [HttpPost("register")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(RegisterResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<RegisterResponse>> Register(
+        [FromBody] RegisterRequest request,
+        CancellationToken cancellationToken)
+    {
+        var response = await authService.RegisterAsync(request, cancellationToken);
+        return Ok(response);
+    }
+
+    [HttpPost("login")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(LoginResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<LoginResponse>> Login(
+        [FromBody] LoginRequest request,
+        CancellationToken cancellationToken)
+    {
+        var response = await authService.LoginAsync(request, cancellationToken);
+        return Ok(response);
+    }
+
+    [HttpPost("change-password")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> ChangePassword(
+        [FromBody] ChangePasswordRequest request,
+        CancellationToken cancellationToken)
+    {
+        var userUid = GetCurrentUserUid();
+        await authService.ChangePasswordAsync(userUid, request, cancellationToken);
+        return NoContent();
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Controllers\BanController.cs ===
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using UserService.Contracts.Bans;
+using UserService.Services.Interfaces;
+
+namespace UserService.Controllers;
+
+[Route("api/bans")]
+[Authorize(Policy = "RequireModerator")]
+public class BanController(IBanService banService) : BaseApiController
+{
+    [HttpPost("ban")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> Ban(
+        [FromBody] BanRequest request,
+        CancellationToken cancellationToken)
+    {
+        var moderatorUid = GetCurrentUserUid();
+        await banService.BanAsync(moderatorUid, request, cancellationToken);
+        return NoContent();
+    }
+
+    [HttpPost("unban/{userUid:guid}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Unban(
+        [FromRoute] Guid userUid,
+        CancellationToken cancellationToken)
+    {
+        var moderatorUid = GetCurrentUserUid();
+        await banService.UnbanAsync(userUid, moderatorUid, cancellationToken);
+        return NoContent();
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Controllers\BaseApiController.cs ===
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Mvc;
+using Shared.Common.Exceptions;
+
+namespace UserService.Controllers;
+
+[ApiController]
+public abstract class BaseApiController : ControllerBase
+{
+    protected Guid GetCurrentUserUid()
+    {
+        var subClaim = User.FindFirstValue(JwtRegisteredClaimNames.Sub)
+                       ?? User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (!Guid.TryParse(subClaim, out var userUid))
+        {
+            throw new UnauthorizedException("Некорректный идентификатор пользователя в токене.");
+        }
+
+        return userUid;
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Controllers\UserController.cs ===
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using UserService.Contracts.Users;
+using UserService.Services.Interfaces;
+
+namespace UserService.Controllers;
+
+[Route("api/users")]
+[Authorize]
+public class UserController(IUserService userService) : BaseApiController
+{
+    [HttpGet("me")]
+    [ProducesResponseType(typeof(UserInfoResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<UserInfoResponse>> GetMyInfo(CancellationToken cancellationToken)
+    {
+        var userUid = GetCurrentUserUid();
+        var response = await userService.GetMyInfoAsync(userUid, cancellationToken);
+        return Ok(response);
+    }
+
+    [HttpPut("me/nickname")]
+    [ProducesResponseType(typeof(UserInfoResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<UserInfoResponse>> UpdateNickname(
+        [FromBody] UpdateNicknameRequest request,
+        CancellationToken cancellationToken)
+    {
+        var userUid = GetCurrentUserUid();
+        var response = await userService.UpdateNicknameAsync(userUid, request, cancellationToken);
+        return Ok(response);
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Data\UserDbContext.cs ===
+using Microsoft.EntityFrameworkCore;
+using UserService.Domain.Entities;
+
+namespace UserService.Data;
+
+public class UserDbContext : DbContext
+{
+    public UserDbContext(DbContextOptions<UserDbContext> options) : base(options)
+    {
+    }
+
+    public DbSet<User> Users => Set<User>();
+    public DbSet<Ban> Bans => Set<Ban>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.HasDefaultSchema("user_schema");
+
+        modelBuilder.Entity<User>(entity =>
+        {
+            entity.ToTable("users");
+
+            entity.HasKey(u => u.Id);
+            entity.Property(u => u.Id).HasColumnName("id");
+
+            entity.Property(u => u.Uid)
+                .HasColumnName("uid")
+                .IsRequired();
+            entity.HasIndex(u => u.Uid).IsUnique();
+
+            entity.Property(u => u.Nickname)
+                .HasColumnName("nickname")
+                .HasMaxLength(64)
+                .IsRequired();
+            entity.HasIndex(u => u.Nickname).IsUnique();
+
+            entity.Property(u => u.Email)
+                .HasColumnName("email")
+                .HasMaxLength(255)
+                .IsRequired();
+            entity.HasIndex(u => u.Email).IsUnique();
+
+            entity.Property(u => u.PasswordHash)
+                .HasColumnName("password_hash")
+                .HasMaxLength(255)
+                .IsRequired();
+
+            entity.Property(u => u.IsModerator)
+                .HasColumnName("is_moderator")
+                .HasDefaultValue(false)
+                .IsRequired();
+
+            entity.Property(u => u.CreatedAt)
+                .HasColumnName("created_at")
+                .IsRequired();
+
+            entity.Property(u => u.UpdatedAt)
+                .HasColumnName("updated_at")
+                .IsRequired();
+        });
+
+        modelBuilder.Entity<Ban>(entity =>
+        {
+            entity.ToTable("bans");
+
+            entity.HasKey(b => b.Id);
+            entity.Property(b => b.Id).HasColumnName("id");
+
+            entity.Property(b => b.UserId)
+                .HasColumnName("user_id")
+                .IsRequired();
+
+            entity.Property(b => b.ModeratorId)
+                .HasColumnName("moderator_id")
+                .IsRequired();
+
+            entity.Property(b => b.Reason)
+                .HasColumnName("reason")
+                .HasMaxLength(500)
+                .IsRequired();
+
+            entity.Property(b => b.BannedAt)
+                .HasColumnName("banned_at")
+                .IsRequired();
+
+            entity.Property(b => b.ExpiresAt)
+                .HasColumnName("expires_at");
+
+            entity.Property(b => b.UnbannedAt)
+                .HasColumnName("unbanned_at");
+
+            // Индекс для быстрой проверки активных банов пользователя
+            entity.HasIndex(b => new { b.UserId, b.UnbannedAt });
+
+            entity.HasOne(b => b.User)
+                .WithMany(u => u.Bans)
+                .HasForeignKey(b => b.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(b => b.Moderator)
+                .WithMany(u => u.IssuedBans)
+                .HasForeignKey(b => b.ModeratorId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        base.OnModelCreating(modelBuilder);
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Domain\Entities\Ban.cs ===
+namespace UserService.Domain.Entities;
+
+public class Ban
+{
+    public long Id { get; set; }
+    public long UserId { get; set; }
+    public long ModeratorId { get; set; }
+    public string Reason { get; set; } = string.Empty;
+    public DateTime BannedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? ExpiresAt { get; set; }
+    public DateTime? UnbannedAt { get; set; }
+
+    // Навигационные свойства
+    public User User { get; set; } = null!;
+    public User Moderator { get; set; } = null!;
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Domain\Entities\User.cs ===
+namespace UserService.Domain.Entities;
+
+public class User
+{
+    public long Id { get; set; }
+    public Guid Uid { get; set; } = Guid.NewGuid();
+    public string Nickname { get; set; } = string.Empty;
+    public string Email { get; set; } = string.Empty;
+    public string PasswordHash { get; set; } = string.Empty;
+    public bool IsModerator { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+
+    // Навигационные свойства
+    public ICollection<Ban> Bans { get; set; } = new List<Ban>();
+    public ICollection<Ban> IssuedBans { get; set; } = new List<Ban>();
+}
+
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Services\Implementations\AuthService.cs ===
+using Microsoft.EntityFrameworkCore;
+using Shared.Common.Exceptions;
+using UserService.Contracts.Auth;
+using UserService.Contracts.Users;
+using UserService.Data;
+using UserService.Domain.Entities;
+using UserService.Services.Interfaces;
+
+namespace UserService.Services.Implementations;
+
+public class AuthService(
+    UserDbContext dbContext,
+    IPasswordHasher passwordHasher,
+    IJwtTokenService jwtTokenService,
+    IBanService banService) : IAuthService
+{
+    public async Task<RegisterResponse> RegisterAsync(RegisterRequest request, CancellationToken cancellationToken = default)
+    {
+        var normalizedEmail = request.Email.Trim().ToLowerInvariant();
+        var trimmedNickname = request.Nickname.Trim();
+
+        var emailExists = await dbContext.Users
+            .AnyAsync(u => u.Email.ToLower() == normalizedEmail, cancellationToken);
+
+        if (emailExists)
+        {
+            throw new ConflictException($"Email '{request.Email}' уже используется.");
+        }
+
+        var nicknameExists = await dbContext.Users
+            .AnyAsync(u => u.Nickname.ToLower() == trimmedNickname.ToLower(), cancellationToken);
+
+        if (nicknameExists)
+        {
+            throw new ConflictException($"Никнейм '{trimmedNickname}' уже занят.");
+        }
+
+        var now = DateTime.UtcNow;
+
+        var user = new User
+        {
+            Uid = Guid.NewGuid(),
+            Email = normalizedEmail,
+            Nickname = trimmedNickname,
+            PasswordHash = passwordHasher.HashPassword(request.Password),
+            IsModerator = false,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+
+        dbContext.Users.Add(user);
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        var token = jwtTokenService.GenerateToken(user);
+
+        return new RegisterResponse(user.Uid, token);
+    }
+
+    public async Task<LoginResponse> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default)
+    {
+        var normalizedEmail = request.Email.Trim().ToLowerInvariant();
+
+        var user = await dbContext.Users
+            .FirstOrDefaultAsync(u => u.Email.ToLower() == normalizedEmail, cancellationToken);
+
+        if (user is null || !passwordHasher.VerifyPassword(request.Password, user.PasswordHash))
+        {
+            throw new UnauthorizedException("Неверный email или пароль.");
+        }
+
+        if (await banService.IsBannedAsync(user.Id, cancellationToken))
+        {
+            throw new ForbiddenException("Ваш аккаунт заблокирован.");
+        }
+
+        var token = jwtTokenService.GenerateToken(user);
+
+        return new LoginResponse(user.Uid, token);
+    }
+
+    public async Task ChangePasswordAsync(Guid userUid, ChangePasswordRequest request, CancellationToken cancellationToken = default)
+    {
+        var user = await dbContext.Users
+            .FirstOrDefaultAsync(u => u.Uid == userUid, cancellationToken)
+            ?? throw new NotFoundException("Пользователь не найден.");
+
+        if (!passwordHasher.VerifyPassword(request.CurrentPassword, user.PasswordHash))
+        {
+            throw new BadRequestException("Текущий пароль указан неверно.");
+        }
+
+        user.PasswordHash = passwordHasher.HashPassword(request.NewPassword);
+        user.UpdatedAt = DateTime.UtcNow;
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Services\Implementations\BanService.cs ===
+using Microsoft.EntityFrameworkCore;
+using Shared.Common.Exceptions;
+using UserService.Contracts.Bans;
+using UserService.Data;
+using UserService.Domain.Entities;
+using UserService.Services.Interfaces;
+
+namespace UserService.Services.Implementations;
+
+public class BanService(UserDbContext dbContext) : IBanService
+{
+    public async Task BanAsync(Guid moderatorUid, BanRequest request, CancellationToken cancellationToken = default)
+    {
+        if (request.UserUid == moderatorUid)
+        {
+            throw new BadRequestException("Модератор не может заблокировать самого себя.");
+        }
+
+        var moderator = await dbContext.Users
+            .FirstOrDefaultAsync(u => u.Uid == moderatorUid, cancellationToken)
+            ?? throw new UnauthorizedException("Модератор не найден.");
+
+        var targetUser = await dbContext.Users
+            .FirstOrDefaultAsync(u => u.Uid == request.UserUid, cancellationToken)
+            ?? throw new NotFoundException($"Пользователь с Uid {request.UserUid} не найден.");
+
+        if (targetUser.IsModerator)
+        {
+            throw new ForbiddenException("Нельзя заблокировать другого модератора.");
+        }
+
+        if (await IsBannedAsync(targetUser.Id, cancellationToken))
+        {
+            throw new ConflictException("Пользователь уже заблокирован.");
+        }
+
+        var ban = new Ban
+        {
+            UserId = targetUser.Id,
+            ModeratorId = moderator.Id,
+            Reason = request.Reason.Trim(),
+            BannedAt = DateTime.UtcNow,
+            ExpiresAt = request.ExpiresAt?.UtcDateTime
+        };
+
+        dbContext.Bans.Add(ban);
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task UnbanAsync(Guid targetUserUid, Guid moderatorUid, CancellationToken cancellationToken = default)
+    {
+        var targetUser = await dbContext.Users
+            .FirstOrDefaultAsync(u => u.Uid == targetUserUid, cancellationToken)
+            ?? throw new NotFoundException($"Пользователь с Uid {targetUserUid} не найден.");
+
+        var now = DateTime.UtcNow;
+
+        var activeBans = await dbContext.Bans
+            .Where(b => b.UserId == targetUser.Id
+                     && b.UnbannedAt == null
+                     && (b.ExpiresAt == null || b.ExpiresAt > now))
+            .ToListAsync(cancellationToken);
+
+        if (activeBans.Count == 0)
+        {
+            throw new NotFoundException("У пользователя нет активных блокировок.");
+        }
+
+        foreach (var ban in activeBans)
+        {
+            ban.UnbannedAt = now;
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task<bool> IsBannedAsync(long userId, CancellationToken cancellationToken = default)
+    {
+        var now = DateTime.UtcNow;
+
+        return await dbContext.Bans
+            .AnyAsync(b => b.UserId == userId
+                        && b.UnbannedAt == null
+                        && (b.ExpiresAt == null || b.ExpiresAt > now),
+                      cancellationToken);
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Services\Implementations\BCryptPasswordHasher.cs ===
+using UserService.Services.Interfaces;
+
+namespace UserService.Services.Implementations;
+
+public class BCryptPasswordHasher : IPasswordHasher
+{
+    public string HashPassword(string password)
+    {
+        return BCrypt.Net.BCrypt.EnhancedHashPassword(password);
+    }
+
+    public bool VerifyPassword(string password, string passwordHash)
+    {
+        return BCrypt.Net.BCrypt.EnhancedVerify(password, passwordHash);
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Services\Implementations\JwtTokenService.cs ===
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
+using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Tokens;
+using UserService.Domain.Entities;
+using UserService.Options;
+using UserService.Services.Interfaces;
+
+namespace UserService.Services.Implementations;
+
+public class JwtTokenService(IOptions<JwtOptions> jwtOptions) : IJwtTokenService
+{
+    private readonly JwtOptions _options = jwtOptions.Value;
+
+    public string GenerateToken(User user)
+    {
+        var claims = new List<Claim>
+        {
+            new(JwtRegisteredClaimNames.Sub, user.Uid.ToString()),
+            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+            new("is_moderator", user.IsModerator.ToString().ToLowerInvariant())
+        };
+
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_options.SecretKey));
+        var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+
+        var token = new JwtSecurityToken(
+            issuer: _options.Issuer,
+            audience: _options.Audience,
+            claims: claims,
+            expires: DateTime.UtcNow.AddMinutes(_options.ExpirationMinutes),
+            signingCredentials: credentials
+        );
+
+        return new JwtSecurityTokenHandler().WriteToken(token);
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Services\Implementations\UserProfileService.cs ===
+using Microsoft.EntityFrameworkCore;
+using Shared.Common.Exceptions;
+using UserService.Contracts.Users;
+using UserService.Data;
+using UserService.Services.Interfaces;
+
+namespace UserService.Services.Implementations;
+
+public class UserProfileService(UserDbContext dbContext) : IUserService
+{
+    public async Task<UserInfoResponse> GetMyInfoAsync(Guid userUid, CancellationToken cancellationToken = default)
+    {
+        var user = await dbContext.Users
+            .AsNoTracking()
+            .FirstOrDefaultAsync(u => u.Uid == userUid, cancellationToken)
+            ?? throw new NotFoundException("Пользователь не найден.");
+
+        return new UserInfoResponse(
+            Uid: user.Uid,
+            Nickname: user.Nickname,
+            Email: user.Email,
+            IsModerator: user.IsModerator,
+            CreatedAt: new DateTimeOffset(user.CreatedAt, TimeSpan.Zero));
+    }
+
+    public async Task<UserInfoResponse> UpdateNicknameAsync(Guid userUid, UpdateNicknameRequest request, CancellationToken cancellationToken = default)
+    {
+        var user = await dbContext.Users
+            .FirstOrDefaultAsync(u => u.Uid == userUid, cancellationToken)
+            ?? throw new NotFoundException("Пользователь не найден.");
+
+        var trimmedNickname = request.NewNickname.Trim();
+
+        var nicknameTaken = await dbContext.Users
+            .AnyAsync(u => u.Uid != userUid && u.Nickname.ToLower() == trimmedNickname.ToLower(), cancellationToken);
+
+        if (nicknameTaken)
+        {
+            throw new ConflictException($"Никнейм '{trimmedNickname}' уже занят.");
+        }
+
+        user.Nickname = trimmedNickname;
+        user.UpdatedAt = DateTime.UtcNow;
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        return new UserInfoResponse(
+            Uid: user.Uid,
+            Nickname: user.Nickname,
+            Email: user.Email,
+            IsModerator: user.IsModerator,
+            CreatedAt: new DateTimeOffset(user.CreatedAt, TimeSpan.Zero));
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Services\Interfaces\IAuthService.cs ===
+using UserService.Contracts.Auth;
+using UserService.Contracts.Users;
+
+namespace UserService.Services.Interfaces;
+
+public interface IAuthService
+{
+    Task<RegisterResponse> RegisterAsync(RegisterRequest request, CancellationToken cancellationToken = default);
+    Task<LoginResponse> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default);
+    Task ChangePasswordAsync(Guid userUid, ChangePasswordRequest request, CancellationToken cancellationToken = default);
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Services\Interfaces\IBanService.cs ===
+using UserService.Contracts.Bans;
+
+namespace UserService.Services.Interfaces;
+
+public interface IBanService
+{
+    Task BanAsync(Guid moderatorUid, BanRequest request, CancellationToken cancellationToken = default);
+    Task UnbanAsync(Guid targetUserUid, Guid moderatorUid, CancellationToken cancellationToken = default);
+    Task<bool> IsBannedAsync(long userId, CancellationToken cancellationToken = default);
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Services\Interfaces\IJwtTokenService.cs ===
+using UserService.Domain.Entities;
+
+namespace UserService.Services.Interfaces;
+
+public interface IJwtTokenService
+{
+    string GenerateToken(User user);
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Services\Interfaces\IPasswordHasher.cs ===
+namespace UserService.Services.Interfaces;
+
+public interface IPasswordHasher
+{
+    string HashPassword(string password);
+    bool VerifyPassword(string password, string passwordHash);
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Services\Interfaces\IUserService.cs ===
+using UserService.Contracts.Users;
+
+namespace UserService.Services.Interfaces;
+
+public interface IUserService
+{
+    Task<UserInfoResponse> GetMyInfoAsync(Guid userUid, CancellationToken cancellationToken = default);
+    Task<UserInfoResponse> UpdateNicknameAsync(Guid userUid, UpdateNicknameRequest request, CancellationToken cancellationToken = default);
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Validators\BanRequestValidator.cs ===
+using FluentValidation;
+using UserService.Contracts.Bans;
+
+namespace KnowledgeControl.UserService.Validators;
+
+public class BanRequestValidator : AbstractValidator<BanRequest>
+{
+    public BanRequestValidator()
+    {
+        RuleFor(x => x.UserUid)
+            .NotEmpty().WithMessage("Не указан идентификатор пользователя.");
+
+        RuleFor(x => x.Reason)
+            .NotEmpty().WithMessage("Причина блокировки обязательна.")
+            .MaximumLength(500).WithMessage("Причина блокировки не должна превышать 500 символов.");
+
+        RuleFor(x => x.ExpiresAt)
+            .GreaterThan(_ => DateTimeOffset.UtcNow)
+            .When(x => x.ExpiresAt.HasValue)
+            .WithMessage("Дата окончания бана должна быть в будущем.");
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Validators\ChangePasswordRequestValidator.cs ===
+using FluentValidation;
+using UserService.Contracts.Users;
+
+namespace KnowledgeControl.UserService.Validators;
+
+public class ChangePasswordRequestValidator : AbstractValidator<ChangePasswordRequest>
+{
+    public ChangePasswordRequestValidator()
+    {
+        RuleFor(x => x.CurrentPassword)
+            .NotEmpty().WithMessage("Текущий пароль обязателен.");
+
+        RuleFor(x => x.NewPassword)
+            .NotEmpty().WithMessage("Новый пароль обязателен.")
+            .MinimumLength(8).WithMessage("Новый пароль должен содержать минимум 8 символов.")
+            .MaximumLength(100).WithMessage("Новый пароль не должен превышать 100 символов.")
+            .NotEqual(x => x.CurrentPassword).WithMessage("Новый пароль не должен совпадать со старым.");
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Validators\LoginRequestValidator.cs ===
+using FluentValidation;
+using UserService.Contracts.Auth;
+
+namespace KnowledgeControl.UserService.Validators;
+
+public class LoginRequestValidator : AbstractValidator<LoginRequest>
+{
+    public LoginRequestValidator()
+    {
+        RuleFor(x => x.Email)
+            .NotEmpty().WithMessage("Email обязателен.")
+            .EmailAddress().WithMessage("Некорректный формат Email.");
+
+        RuleFor(x => x.Password)
+            .NotEmpty().WithMessage("Пароль обязателен.");
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Validators\RegisterRequestValidator.cs ===
+using FluentValidation;
+using UserService.Contracts.Auth;
+
+namespace KnowledgeControl.UserService.Validators;
+
+public class RegisterRequestValidator : AbstractValidator<RegisterRequest>
+{
+    public RegisterRequestValidator()
+    {
+        RuleFor(x => x.Nickname)
+            .NotEmpty().WithMessage("Никнейм обязателен.")
+            .MinimumLength(3).WithMessage("Никнейм должен содержать минимум 3 символа.")
+            .MaximumLength(64).WithMessage("Никнейм не должен превышать 64 символа.");
+
+        RuleFor(x => x.Email)
+            .NotEmpty().WithMessage("Email обязателен.")
+            .EmailAddress().WithMessage("Некорректный формат Email.")
+            .MaximumLength(255).WithMessage("Email не должен превышать 255 символов.");
+
+        RuleFor(x => x.Password)
+            .NotEmpty().WithMessage("Пароль обязателен.")
+            .MinimumLength(8).WithMessage("Пароль должен содержать минимум 8 символов.")
+            .MaximumLength(100).WithMessage("Пароль не должен превышать 100 символов.");
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Validators\UpdateNicknameRequestValidator.cs ===
+using FluentValidation;
+using UserService.Contracts.Users;
+
+namespace KnowledgeControl.UserService.Validators;
+
+public class UpdateNicknameRequestValidator : AbstractValidator<UpdateNicknameRequest>
+{
+    public UpdateNicknameRequestValidator()
+    {
+        RuleFor(x => x.NewNickname)
+            .NotEmpty().WithMessage("Новый никнейм обязателен.")
+            .MinimumLength(3).WithMessage("Никнейм должен содержать минимум 3 символа.")
+            .MaximumLength(64).WithMessage("Никнейм не должен превышать 64 символа.");
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\appsettings.json ===
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Host=localhost;Port=5433;Database=KnowledgeDb;Username=postgres;Password=CHANGE_ME"
+  },
+  "Jwt": {
+    "SecretKey": "CHANGE_ME_SUPER_SECRET_KEY_AT_LEAST_32_CHARS",
+    "Issuer": "KnowledgeControl.UserService",
+    "Audience": "KnowledgeControl.Services",
+    "ExpirationMinutes": 60
+  },
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*"
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\Program.cs ===
+using System.Text;
+using FluentValidation;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+using Serilog;
+using Shared.Common.Extensions;
+using UserService.Data;
+using UserService.Options;
+using UserService.Services.Implementations;
+using UserService.Services.Interfaces;
+
+var builder = WebApplication.CreateBuilder(args);
+
+CommonServiceExtensions.ConfigureSerilog(builder.Configuration, "UserService");
+builder.Host.UseSerilog();
+
+// Р‘Р°Р·РѕРІС‹Рµ РІРµР±-СЃРµСЂРІРёСЃС‹, Swagger Рё ValidationFilter
+builder.Services.AddCommonWebServices("UserService API");
+builder.Services.AddValidatorsFromAssembly(typeof(Program).Assembly);
+
+// PostgreSQL (СЃС…РµРјР° user_schema)
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
+    ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is not configured.");
+
+builder.Services.AddDbContext<UserDbContext>(options =>
+    options.UseNpgsql(connectionString, npgsql =>
+        npgsql.MigrationsHistoryTable("__EFMigrationsHistory", "user_schema")));
+
+// РќР°СЃС‚СЂРѕР№РєРё Рё Р°СѓС‚РµРЅС‚РёС„РёРєР°С†РёСЏ JWT
+var jwtSection = builder.Configuration.GetSection(JwtOptions.SectionName);
+builder.Services.Configure<JwtOptions>(jwtSection);
+
+var jwtOptions = jwtSection.Get<JwtOptions>()
+    ?? throw new InvalidOperationException("JWT configuration section is missing.");
+
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.MapInboundClaims = false;
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = jwtOptions.Issuer,
+            ValidateAudience = true,
+            ValidAudience = jwtOptions.Audience,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.SecretKey)),
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.Zero
+        };
+    });
+
+builder.Services.AddAuthorizationBuilder()
+    .AddPolicy("RequireModerator", policy =>
+        policy.RequireClaim("is_moderator", "true"));
+
+// Р РµРіРёСЃС‚СЂР°С†РёСЏ СЃРµСЂРІРёСЃРѕРІ РїСЂРёР»РѕР¶РµРЅРёСЏ
+builder.Services.AddScoped<IPasswordHasher, BCryptPasswordHasher>();
+builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
+builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<IUserService, UserProfileService>();
+builder.Services.AddScoped<IBanService, BanService>();
+
+var app = builder.Build();
+
+await app.ApplyMigrationsAsync<UserDbContext>();
+
+app.UseCommonMiddleware(app.Environment);
+
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapControllers();
+
+app.Run();
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\UserService\UserService.csproj ===
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <NoWarn>CS9057</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BCrypt.Net-Next" Version="4.2.0" />
+    <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.2.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.3" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.3">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+    <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="11.0.1" />
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.23.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Shared.Contracts\Shared.Contracts.csproj" />
+    <ProjectReference Include="..\Shared.Common\Shared.Common.csproj" />
+  </ItemGroup>
+
+</Project>
+
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\appsettings.json ===
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Host=localhost;Port=5432;Database=KnowledgeDb;Username=postgres;Password=CHANGE_ME"
+  },
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*"
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Program.cs ===
+using FluentValidation;
+using Serilog;
+using Shared.Common.Extensions;
+
+var builder = WebApplication.CreateBuilder(args);
+
+CommonServiceExtensions.ConfigureSerilog(builder.Configuration, "SearchService");
+builder.Host.UseSerilog();
+
+builder.Services.AddCommonWebServices("Search Service API");
+builder.Services.AddValidatorsFromAssembly(typeof(Program).Assembly);
+
+var app = builder.Build();
+
+app.UseCommonMiddleware(app.Environment);
+app.UseHttpsRedirection();
+app.UseAuthorization();
+app.MapControllers();
+
+app.Run();
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\SearchService.csproj ===
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.2.0" />
+    <PackageReference Include="MassTransit.RabbitMQ" Version="8.4.0" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="11.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.3">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+    <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="11.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Shared.Contracts\Shared.Contracts.csproj" />
+    <ProjectReference Include="..\Shared.Common\Shared.Common.csproj" />
+  </ItemGroup>
+
+</Project>
+
+

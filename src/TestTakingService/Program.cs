@@ -68,6 +68,8 @@ builder.Services.AddMassTransit(x =>
 builder.Services.AddScoped<IAttemptSnapshotCache, RedisAttemptSnapshotCache>();
 builder.Services.AddScoped<IMessagePublisher, RabbitMqMessagePublisher>();
 builder.Services.AddSingleton<GradingService>();
+builder.Services.AddScoped<IAttemptService, AttemptService>();
+
 
 var app = builder.Build();
 

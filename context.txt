@@ -290,6 +290,215 @@ public class JwtOptions
 </Project>
 
 
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Contracts\Moderation\ReportRequest.cs ===
+namespace TestCreationService.Contracts.Moderation;
+
+public record ReportRequest
+{
+    public required string TargetType { get; init; }
+    public required Guid TargetUid { get; init; }
+    public required string Reason { get; init; }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Contracts\Moderation\ReportResponse.cs ===
+namespace TestCreationService.Contracts.Moderation;
+
+public record ReportResponse(
+    Guid Uid,
+    Guid ReporterUid,
+    string TargetType,
+    Guid TargetUid,
+    string Reason,
+    string Status,
+    DateTimeOffset CreatedAt);
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Contracts\Questions\AnswerOptionRequest.cs ===
+namespace TestCreationService.Contracts.Questions;
+
+public record AnswerOptionRequest
+{
+    public required string Text { get; init; }
+    public required bool IsCorrect { get; init; }
+    public required int Position { get; init; }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Contracts\Questions\AnswerOptionResponse.cs ===
+namespace TestCreationService.Contracts.Questions;
+
+public record AnswerOptionResponse(
+    Guid Uid,
+    string Text,
+    bool IsCorrect,
+    int Position);
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Contracts\Questions\CreateQuestionRequest.cs ===
+namespace TestCreationService.Contracts.Questions;
+
+public record CreateQuestionRequest
+{
+    public required Guid CategoryUid { get; init; }
+    public required string Title { get; init; }
+    public required string Text { get; init; }
+    public required string QuestionType { get; init; }
+    public string? CorrectTextAnswer { get; init; }
+    public required string Visibility { get; init; }
+    public IReadOnlyList<AnswerOptionRequest> AnswerOptions { get; init; } = [];
+    public IReadOnlyList<string> Tags { get; init; } = [];
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Contracts\Questions\QuestionResponse.cs ===
+namespace TestCreationService.Contracts.Questions;
+
+public record QuestionResponse(
+    Guid Uid,
+    Guid AuthorUid,
+    Guid CategoryUid,
+    string CategoryName,
+    string Title,
+    string Text,
+    string QuestionType,
+    string? CorrectTextAnswer,
+    bool IsPublic,
+    int Version,
+    bool IsBlocked,
+    IReadOnlyList<string> Tags,
+    IReadOnlyList<AnswerOptionResponse> AnswerOptions,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Contracts\Questions\UpdateQuestionRequest.cs ===
+namespace TestCreationService.Contracts.Questions;
+
+public record UpdateQuestionRequest
+{
+    public required Guid CategoryUid { get; init; }
+    public required string Title { get; init; }
+    public required string Text { get; init; }
+    public required string QuestionType { get; init; }
+    public string? CorrectTextAnswer { get; init; }
+    public required string Visibility { get; init; }
+    public IReadOnlyList<AnswerOptionRequest> AnswerOptions { get; init; } = [];
+    public IReadOnlyList<string> Tags { get; init; } = [];
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Contracts\Tests\CreateTestRequest.cs ===
+namespace TestCreationService.Contracts.Tests;
+
+public record CreateTestRequest
+{
+    public required Guid CategoryUid { get; init; }
+    public required string Title { get; init; }
+    public string? Description { get; init; }
+    public int? TimeLimitSeconds { get; init; }
+    public int? MaxAttempts { get; init; }
+    public int PassingScore { get; init; }
+    public DateTimeOffset? StartsAt { get; init; }
+    public DateTimeOffset? EndsAt { get; init; }
+    public bool IsPublic { get; init; } = true;
+    public required IReadOnlyList<TestQuestionItemRequest> Questions { get; init; }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Contracts\Tests\PublishTestResponse.cs ===
+namespace TestCreationService.Contracts.Tests;
+
+public record PublishTestResponse(
+    Guid Uid,
+    string Status,
+    DateTimeOffset PublishedAt);
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Contracts\Tests\TestQuestionItemRequest.cs ===
+namespace TestCreationService.Contracts.Tests;
+
+public record TestQuestionItemRequest
+{
+    public required Guid QuestionUid { get; init; }
+    public required int OrderIndex { get; init; }
+    public int Points { get; init; } = 1;
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Contracts\Tests\TestResponse.cs ===
+namespace TestCreationService.Contracts.Tests;
+
+public record TestResponse(
+    Guid Uid,
+    Guid AuthorUid,
+    Guid CategoryUid,
+    string CategoryName,
+    string Title,
+    string? Description,
+    int? TimeLimitSeconds,
+    int? MaxAttempts,
+    int PassingScore,
+    DateTimeOffset? StartsAt,
+    DateTimeOffset? EndsAt,
+    bool IsPublic,
+    bool IsHidden,
+    string Status,
+    int QuestionsCount,
+    int TotalPoints,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Contracts\Tests\TestSnapshotResponse.cs ===
+namespace TestCreationService.Contracts.Tests;
+
+public record AnswerOptionSnapshotResponse(
+    Guid Uid,
+    string Text,
+    bool IsCorrect,
+    int Position);
+
+public record QuestionSnapshotResponse(
+    Guid QuestionUid,
+    string Title,
+    string Text,
+    string QuestionType,
+    int OrderIndex,
+    int Points,
+    string? CorrectTextAnswer,
+    IReadOnlyList<AnswerOptionSnapshotResponse> Options);
+
+public record TestSnapshotResponse(
+    Guid TestUid,
+    Guid AuthorUid,
+    string Title,
+    string? Description,
+    int? TimeLimitSeconds,
+    int? MaxAttempts,
+    int PassingScore,
+    DateTimeOffset? StartsAt,
+    DateTimeOffset? EndsAt,
+    string Status,
+    IReadOnlyList<QuestionSnapshotResponse> Questions);
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Contracts\Tests\TestStatsResponse.cs ===
+namespace TestCreationService.Contracts.Tests;
+
+public record TestStatsResponse(
+    Guid TestUid,
+    string Title,
+    string Status,
+    int QuestionsCount,
+    int TotalPoints,
+    int PendingReportsCount);
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Contracts\Tests\UpdateTestRequest.cs ===
+namespace TestCreationService.Contracts.Tests;
+
+public record UpdateTestRequest
+{
+    public required Guid CategoryUid { get; init; }
+    public required string Title { get; init; }
+    public string? Description { get; init; }
+    public int? TimeLimitSeconds { get; init; }
+    public int? MaxAttempts { get; init; }
+    public int PassingScore { get; init; }
+    public DateTimeOffset? StartsAt { get; init; }
+    public DateTimeOffset? EndsAt { get; init; }
+    public bool IsPublic { get; init; } = true;
+    public required IReadOnlyList<TestQuestionItemRequest> Questions { get; init; }
+}
+
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Data\TestCreationDbContext.cs ===
 using Microsoft.EntityFrameworkCore;
 using TestCreationService.Domain.Entities;
@@ -379,6 +588,11 @@ public class TestCreationDbContext : DbContext
                 .HasColumnName("category_id")
                 .IsRequired();
 
+            entity.Property(q => q.Title)
+                .HasColumnName("title")
+                .HasMaxLength(200)
+                .IsRequired();
+
             entity.Property(q => q.Text)
                 .HasColumnName("text")
                 .HasMaxLength(2000)
@@ -399,6 +613,16 @@ public class TestCreationDbContext : DbContext
                 .HasDefaultValue(true)
                 .IsRequired();
 
+            entity.Property(q => q.Version)
+                .HasColumnName("version")
+                .HasDefaultValue(1)
+                .IsRequired();
+
+            entity.Property(q => q.IsDeleted)
+                .HasColumnName("is_deleted")
+                .HasDefaultValue(false)
+                .IsRequired();
+
             entity.Property(q => q.IsBlocked)
                 .HasColumnName("is_blocked")
                 .HasDefaultValue(false)
@@ -412,7 +636,7 @@ public class TestCreationDbContext : DbContext
                 .HasColumnName("updated_at")
                 .IsRequired();
 
-            entity.HasIndex(q => new { q.CategoryId, q.IsPublic, q.IsBlocked });
+            entity.HasIndex(q => new { q.CategoryId, q.IsPublic, q.IsDeleted, q.IsBlocked });
 
             entity.HasOne(q => q.Category)
                 .WithMany(c => c.Questions)
@@ -446,11 +670,11 @@ public class TestCreationDbContext : DbContext
                 .HasDefaultValue(false)
                 .IsRequired();
 
-            entity.Property(a => a.OrderIndex)
-                .HasColumnName("order_index")
+            entity.Property(a => a.Position)
+                .HasColumnName("position")
                 .IsRequired();
 
-            entity.HasIndex(a => new { a.QuestionId, a.OrderIndex });
+            entity.HasIndex(a => new { a.QuestionId, a.Position });
 
             entity.HasOne(a => a.Question)
                 .WithMany(q => q.AnswerOptions)
@@ -514,9 +738,25 @@ public class TestCreationDbContext : DbContext
             entity.Property(t => t.MaxAttempts)
                 .HasColumnName("max_attempts");
 
+            entity.Property(t => t.PassingScore)
+                .HasColumnName("passing_score")
+                .HasDefaultValue(0)
+                .IsRequired();
+
+            entity.Property(t => t.StartsAt)
+                .HasColumnName("starts_at");
+
+            entity.Property(t => t.EndsAt)
+                .HasColumnName("ends_at");
+
             entity.Property(t => t.IsPublic)
                 .HasColumnName("is_public")
                 .HasDefaultValue(true)
+                .IsRequired();
+
+            entity.Property(t => t.IsHidden)
+                .HasColumnName("is_hidden")
+                .HasDefaultValue(false)
                 .IsRequired();
 
             entity.Property(t => t.Status)
@@ -534,7 +774,7 @@ public class TestCreationDbContext : DbContext
                 .HasColumnName("updated_at")
                 .IsRequired();
 
-            entity.HasIndex(t => new { t.CategoryId, t.Status, t.IsPublic });
+            entity.HasIndex(t => new { t.CategoryId, t.Status, t.IsPublic, t.IsHidden });
 
             entity.HasOne(t => t.Category)
                 .WithMany(c => c.Tests)
@@ -558,6 +798,11 @@ public class TestCreationDbContext : DbContext
             entity.Property(tq => tq.Points)
                 .HasColumnName("points")
                 .HasDefaultValue(1)
+                .IsRequired();
+
+            entity.Property(tq => tq.Snapshot)
+                .HasColumnName("snapshot")
+                .HasColumnType("jsonb")
                 .IsRequired();
 
             entity.HasIndex(tq => new { tq.TestId, tq.OrderIndex });
@@ -643,7 +888,7 @@ public class AnswerOption
     public long QuestionId { get; set; }
     public string Text { get; set; } = string.Empty;
     public bool IsCorrect { get; set; }
-    public int OrderIndex { get; set; }
+    public int Position { get; set; }
 
     public Question Question { get; set; } = null!;
 }
@@ -693,10 +938,13 @@ public class Question
     public Guid Uid { get; set; } = Guid.NewGuid();
     public Guid AuthorUid { get; set; }
     public long CategoryId { get; set; }
+    public string Title { get; set; } = string.Empty;
     public string Text { get; set; } = string.Empty;
     public QuestionType QuestionType { get; set; }
     public string? CorrectTextAnswer { get; set; }
     public bool IsPublic { get; set; } = true;
+    public int Version { get; set; } = 1;
+    public bool IsDeleted { get; set; }
     public bool IsBlocked { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
@@ -746,7 +994,11 @@ public class Test
     public string? Description { get; set; }
     public int? TimeLimitSeconds { get; set; }
     public int? MaxAttempts { get; set; }
+    public int PassingScore { get; set; }
+    public DateTime? StartsAt { get; set; }
+    public DateTime? EndsAt { get; set; }
     public bool IsPublic { get; set; } = true;
+    public bool IsHidden { get; set; }
     public TestStatus Status { get; set; } = TestStatus.Draft;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
@@ -764,6 +1016,7 @@ public class TestQuestion
     public long QuestionId { get; set; }
     public int OrderIndex { get; set; }
     public int Points { get; set; } = 1;
+    public string Snapshot { get; set; } = "{}";
 
     public Test Test { get; set; } = null!;
     public Question Question { get; set; } = null!;
@@ -807,6 +1060,304 @@ public enum TestStatus
     Published,
     Archived,
     Blocked
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Validators\CreateQuestionRequestValidator.cs ===
+using FluentValidation;
+using TestCreationService.Contracts.Questions;
+using TestCreationService.Domain.Enums;
+
+namespace TestCreationService.Validators;
+
+public class CreateQuestionRequestValidator : AbstractValidator<CreateQuestionRequest>
+{
+    private static readonly string[] AllowedQuestionTypes = Enum.GetNames<QuestionType>();
+    private static readonly string[] AllowedVisibilities = ["Public", "Private"];
+
+    public CreateQuestionRequestValidator()
+    {
+        RuleFor(x => x.CategoryUid)
+            .NotEmpty().WithMessage("Не указан идентификатор категории.");
+
+        RuleFor(x => x.Title)
+            .NotEmpty().WithMessage("Заголовок вопроса обязателен.")
+            .MinimumLength(3).WithMessage("Заголовок вопроса должен содержать минимум 3 символа.")
+            .MaximumLength(200).WithMessage("Заголовок вопроса не должен превышать 200 символов.");
+
+        RuleFor(x => x.Text)
+            .NotEmpty().WithMessage("Текст вопроса обязателен.")
+            .MinimumLength(3).WithMessage("Текст вопроса должен содержать минимум 3 символа.")
+            .MaximumLength(2000).WithMessage("Текст вопроса не должен превышать 2000 символов.");
+
+        RuleFor(x => x.QuestionType)
+            .NotEmpty().WithMessage("Тип вопроса обязателен.")
+            .Must(t => AllowedQuestionTypes.Contains(t, StringComparer.OrdinalIgnoreCase))
+            .WithMessage($"Тип вопроса должен быть одним из: {string.Join(", ", AllowedQuestionTypes)}.");
+
+        RuleFor(x => x.Visibility)
+            .NotEmpty().WithMessage("Видимость вопроса обязательна.")
+            .Must(v => AllowedVisibilities.Contains(v, StringComparer.OrdinalIgnoreCase))
+            .WithMessage("Видимость должна быть 'Public' или 'Private'.");
+
+        RuleForEach(x => x.AnswerOptions).ChildRules(option =>
+        {
+            option.RuleFor(o => o.Text)
+                .NotEmpty().WithMessage("Текст варианта ответа обязателен.")
+                .MaximumLength(500).WithMessage("Текст варианта ответа не должен превышать 500 символов.");
+
+            option.RuleFor(o => o.Position)
+                .GreaterThanOrEqualTo(0).WithMessage("Позиция варианта ответа не может быть отрицательной.");
+        });
+
+        RuleForEach(x => x.Tags)
+            .NotEmpty().WithMessage("Тег не может быть пустым.")
+            .MaximumLength(50).WithMessage("Длина тега не должна превышать 50 символов.");
+
+        When(x => string.Equals(x.QuestionType, nameof(QuestionType.SingleChoice), StringComparison.OrdinalIgnoreCase), () =>
+        {
+            RuleFor(x => x.AnswerOptions)
+                .Must(opts => opts.Count >= 2)
+                .WithMessage("Для вопроса с одиночным выбором необходимо минимум 2 варианта ответа.")
+                .Must(opts => opts.Count(o => o.IsCorrect) == 1)
+                .WithMessage("Для вопроса с одиночным выбором должен быть ровно 1 правильный вариант ответа.");
+        });
+
+        When(x => string.Equals(x.QuestionType, nameof(QuestionType.MultipleChoice), StringComparison.OrdinalIgnoreCase), () =>
+        {
+            RuleFor(x => x.AnswerOptions)
+                .Must(opts => opts.Count >= 2)
+                .WithMessage("Для вопроса с множественным выбором необходимо минимум 2 варианта ответа.")
+                .Must(opts => opts.Count(o => o.IsCorrect) >= 1)
+                .WithMessage("Для вопроса с множественным выбором должен быть хотя бы 1 правильный вариант ответа.");
+        });
+
+        When(x => string.Equals(x.QuestionType, nameof(QuestionType.TextInput), StringComparison.OrdinalIgnoreCase), () =>
+        {
+            RuleFor(x => x.CorrectTextAnswer)
+                .NotEmpty().WithMessage("Для текстового вопроса необходимо указать правильный ответ.")
+                .MaximumLength(500).WithMessage("Правильный текстовый ответ не должен превышать 500 символов.");
+        });
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Validators\CreateTestRequestValidator.cs ===
+using FluentValidation;
+using TestCreationService.Contracts.Tests;
+
+namespace TestCreationService.Validators;
+
+public class CreateTestRequestValidator : AbstractValidator<CreateTestRequest>
+{
+    public CreateTestRequestValidator()
+    {
+        RuleFor(x => x.CategoryUid)
+            .NotEmpty().WithMessage("Не указан идентификатор категории.");
+
+        RuleFor(x => x.Title)
+            .NotEmpty().WithMessage("Название теста обязательно.")
+            .MinimumLength(3).WithMessage("Название теста должно содержать минимум 3 символа.")
+            .MaximumLength(200).WithMessage("Название теста не должно превышать 200 символов.");
+
+        RuleFor(x => x.Description)
+            .MaximumLength(2000).WithMessage("Описание теста не должно превышать 2000 символов.")
+            .When(x => x.Description is not null);
+
+        RuleFor(x => x.TimeLimitSeconds)
+            .GreaterThan(0).WithMessage("Ограничение по времени должно быть больше 0 секунд.")
+            .When(x => x.TimeLimitSeconds.HasValue);
+
+        RuleFor(x => x.MaxAttempts)
+            .GreaterThan(0).WithMessage("Максимальное количество попыток должно быть больше 0.")
+            .When(x => x.MaxAttempts.HasValue);
+
+        RuleFor(x => x.PassingScore)
+            .InclusiveBetween(0, 100).WithMessage("Проходной балл должен быть в диапазоне от 0 до 100.");
+
+        RuleFor(x => x.StartsAt)
+            .LessThan(x => x.EndsAt)
+            .When(x => x.StartsAt.HasValue && x.EndsAt.HasValue)
+            .WithMessage("Дата начала теста должна быть раньше даты окончания.");
+
+        RuleFor(x => x.Questions)
+            .NotEmpty().WithMessage("Тест должен содержать хотя бы один вопрос.")
+            .Must(q => q.Select(i => i.QuestionUid).Distinct().Count() == q.Count)
+            .WithMessage("Вопросы в тесте не должны дублироваться.");
+
+        RuleForEach(x => x.Questions).ChildRules(q =>
+        {
+            q.RuleFor(i => i.QuestionUid)
+                .NotEmpty().WithMessage("Не указан идентификатор вопроса.");
+
+            q.RuleFor(i => i.OrderIndex)
+                .GreaterThanOrEqualTo(0).WithMessage("Порядковый номер вопроса не может быть отрицательным.");
+
+            q.RuleFor(i => i.Points)
+                .GreaterThan(0).WithMessage("Количество баллов за вопрос должно быть больше 0.");
+        });
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Validators\ReportRequestValidator.cs ===
+using FluentValidation;
+using TestCreationService.Contracts.Moderation;
+using TestCreationService.Domain.Enums;
+
+namespace TestCreationService.Validators;
+
+public class ReportRequestValidator : AbstractValidator<ReportRequest>
+{
+    private static readonly string[] AllowedTargetTypes = Enum.GetNames<ModerationTargetType>();
+
+    public ReportRequestValidator()
+    {
+        RuleFor(x => x.TargetType)
+            .NotEmpty().WithMessage("Тип объекта жалобы обязателен.")
+            .Must(t => AllowedTargetTypes.Contains(t, StringComparer.OrdinalIgnoreCase))
+            .WithMessage($"Тип объекта жалобы должен быть одним из: {string.Join(", ", AllowedTargetTypes)}.");
+
+        RuleFor(x => x.TargetUid)
+            .NotEmpty().WithMessage("Не указан идентификатор объекта жалобы.");
+
+        RuleFor(x => x.Reason)
+            .NotEmpty().WithMessage("Причина жалобы обязательна.")
+            .MinimumLength(5).WithMessage("Причина жалобы должна содержать минимум 5 символов.")
+            .MaximumLength(1000).WithMessage("Причина жалобы не должна превышать 1000 символов.");
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Validators\UpdateQuestionRequestValidator.cs ===
+using FluentValidation;
+using TestCreationService.Contracts.Questions;
+using TestCreationService.Domain.Enums;
+
+namespace TestCreationService.Validators;
+
+public class UpdateQuestionRequestValidator : AbstractValidator<UpdateQuestionRequest>
+{
+    private static readonly string[] AllowedQuestionTypes = Enum.GetNames<QuestionType>();
+    private static readonly string[] AllowedVisibilities = ["Public", "Private"];
+
+    public UpdateQuestionRequestValidator()
+    {
+        RuleFor(x => x.CategoryUid)
+            .NotEmpty().WithMessage("Не указан идентификатор категории.");
+
+        RuleFor(x => x.Title)
+            .NotEmpty().WithMessage("Заголовок вопроса обязателен.")
+            .MinimumLength(3).WithMessage("Заголовок вопроса должен содержать минимум 3 символа.")
+            .MaximumLength(200).WithMessage("Заголовок вопроса не должен превышать 200 символов.");
+
+        RuleFor(x => x.Text)
+            .NotEmpty().WithMessage("Текст вопроса обязателен.")
+            .MinimumLength(3).WithMessage("Текст вопроса должен содержать минимум 3 символа.")
+            .MaximumLength(2000).WithMessage("Текст вопроса не должен превышать 2000 символов.");
+
+        RuleFor(x => x.QuestionType)
+            .NotEmpty().WithMessage("Тип вопроса обязателен.")
+            .Must(t => AllowedQuestionTypes.Contains(t, StringComparer.OrdinalIgnoreCase))
+            .WithMessage($"Тип вопроса должен быть одним из: {string.Join(", ", AllowedQuestionTypes)}.");
+
+        RuleFor(x => x.Visibility)
+            .NotEmpty().WithMessage("Видимость вопроса обязательна.")
+            .Must(v => AllowedVisibilities.Contains(v, StringComparer.OrdinalIgnoreCase))
+            .WithMessage("Видимость должна быть 'Public' или 'Private'.");
+
+        RuleForEach(x => x.AnswerOptions).ChildRules(option =>
+        {
+            option.RuleFor(o => o.Text)
+                .NotEmpty().WithMessage("Текст варианта ответа обязателен.")
+                .MaximumLength(500).WithMessage("Текст варианта ответа не должен превышать 500 символов.");
+
+            option.RuleFor(o => o.Position)
+                .GreaterThanOrEqualTo(0).WithMessage("Позиция варианта ответа не может быть отрицательной.");
+        });
+
+        RuleForEach(x => x.Tags)
+            .NotEmpty().WithMessage("Тег не может быть пустым.")
+            .MaximumLength(50).WithMessage("Длина тега не должна превышать 50 символов.");
+
+        When(x => string.Equals(x.QuestionType, nameof(QuestionType.SingleChoice), StringComparison.OrdinalIgnoreCase), () =>
+        {
+            RuleFor(x => x.AnswerOptions)
+                .Must(opts => opts.Count >= 2)
+                .WithMessage("Для вопроса с одиночным выбором необходимо минимум 2 варианта ответа.")
+                .Must(opts => opts.Count(o => o.IsCorrect) == 1)
+                .WithMessage("Для вопроса с одиночным выбором должен быть ровно 1 правильный вариант ответа.");
+        });
+
+        When(x => string.Equals(x.QuestionType, nameof(QuestionType.MultipleChoice), StringComparison.OrdinalIgnoreCase), () =>
+        {
+            RuleFor(x => x.AnswerOptions)
+                .Must(opts => opts.Count >= 2)
+                .WithMessage("Для вопроса с множественным выбором необходимо минимум 2 варианта ответа.")
+                .Must(opts => opts.Count(o => o.IsCorrect) >= 1)
+                .WithMessage("Для вопроса с множественным выбором должен быть хотя бы 1 правильный вариант ответа.");
+        });
+
+        When(x => string.Equals(x.QuestionType, nameof(QuestionType.TextInput), StringComparison.OrdinalIgnoreCase), () =>
+        {
+            RuleFor(x => x.CorrectTextAnswer)
+                .NotEmpty().WithMessage("Для текстового вопроса необходимо указать правильный ответ.")
+                .MaximumLength(500).WithMessage("Правильный текстовый ответ не должен превышать 500 символов.");
+        });
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Validators\UpdateTestRequestValidator.cs ===
+using FluentValidation;
+using TestCreationService.Contracts.Tests;
+
+namespace TestCreationService.Validators;
+
+public class UpdateTestRequestValidator : AbstractValidator<UpdateTestRequest>
+{
+    public UpdateTestRequestValidator()
+    {
+        RuleFor(x => x.CategoryUid)
+            .NotEmpty().WithMessage("Не указан идентификатор категории.");
+
+        RuleFor(x => x.Title)
+            .NotEmpty().WithMessage("Название теста обязательно.")
+            .MinimumLength(3).WithMessage("Название теста должно содержать минимум 3 символа.")
+            .MaximumLength(200).WithMessage("Название теста не должно превышать 200 символов.");
+
+        RuleFor(x => x.Description)
+            .MaximumLength(2000).WithMessage("Описание теста не должно превышать 2000 символов.")
+            .When(x => x.Description is not null);
+
+        RuleFor(x => x.TimeLimitSeconds)
+            .GreaterThan(0).WithMessage("Ограничение по времени должно быть больше 0 секунд.")
+            .When(x => x.TimeLimitSeconds.HasValue);
+
+        RuleFor(x => x.MaxAttempts)
+            .GreaterThan(0).WithMessage("Максимальное количество попыток должно быть больше 0.")
+            .When(x => x.MaxAttempts.HasValue);
+
+        RuleFor(x => x.PassingScore)
+            .InclusiveBetween(0, 100).WithMessage("Проходной балл должен быть в диапазоне от 0 до 100.");
+
+        RuleFor(x => x.StartsAt)
+            .LessThan(x => x.EndsAt)
+            .When(x => x.StartsAt.HasValue && x.EndsAt.HasValue)
+            .WithMessage("Дата начала теста должна быть раньше даты окончания.");
+
+        RuleFor(x => x.Questions)
+            .NotEmpty().WithMessage("Тест должен содержать хотя бы один вопрос.")
+            .Must(q => q.Select(i => i.QuestionUid).Distinct().Count() == q.Count)
+            .WithMessage("Вопросы в тесте не должны дублироваться.");
+
+        RuleForEach(x => x.Questions).ChildRules(q =>
+        {
+            q.RuleFor(i => i.QuestionUid)
+                .NotEmpty().WithMessage("Не указан идентификатор вопроса.");
+
+            q.RuleFor(i => i.OrderIndex)
+                .GreaterThanOrEqualTo(0).WithMessage("Порядковый номер вопроса не может быть отрицательным.");
+
+            q.RuleFor(i => i.Points)
+                .GreaterThan(0).WithMessage("Количество баллов за вопрос должно быть больше 0.");
+        });
+    }
 }
 
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\appsettings.json ===

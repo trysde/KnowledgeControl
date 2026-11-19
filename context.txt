@@ -274,6 +274,22 @@ public class JwtOptions
 </Project>
 
 
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\Shared.Contracts\Events\TestCompletedEvent.cs ===
+namespace Shared.Contracts.Events;
+
+public record TestCompletedEvent
+{
+    public Guid EventId { get; init; } = Guid.NewGuid();
+    public required Guid TestUid { get; init; }
+    public required Guid UserUid { get; init; }
+    public required Guid AttemptUid { get; init; }
+    public required decimal Score { get; init; }
+    public required decimal MaxScore { get; init; }
+    public required decimal Percent { get; init; }
+    public required bool Passed { get; init; }
+    public required DateTimeOffset CompletedAt { get; init; }
+}
+
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\Shared.Contracts\Events\TestPublishedEvent.cs ===
 namespace Shared.Contracts.Events;
 
@@ -2760,6 +2776,141 @@ app.Run();
 </Project>
 
 
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Contracts\Attempts\AttemptResponse.cs ===
+using TestTakingService.Contracts.Snapshots;
+
+namespace TestTakingService.Contracts.Attempts;
+
+public record SavedAnswerDto(
+    Guid QuestionUid,
+    IReadOnlyList<Guid> SelectedOptionUids,
+    string? TextAnswer,
+    DateTimeOffset AnsweredAt);
+
+public record AttemptResponse(
+    Guid AttemptUid,
+    Guid TestUid,
+    Guid UserUid,
+    string Status,
+    DateTimeOffset StartedAt,
+    DateTimeOffset? FinishedAt,
+    DateTimeOffset? ExpiresAt,
+    TestSnapshotDto TestSnapshot,
+    IReadOnlyList<SavedAnswerDto> Answers);
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Contracts\Attempts\AttemptResultResponse.cs ===
+namespace TestTakingService.Contracts.Attempts;
+
+public record QuestionResultDto(
+    Guid QuestionUid,
+    string Title,
+    string QuestionType,
+    IReadOnlyList<Guid> SelectedOptionUids,
+    string? TextAnswer,
+    bool IsCorrect,
+    decimal PointsEarned,
+    decimal MaxPoints);
+
+public record AttemptResultResponse(
+    Guid ResultUid,
+    Guid AttemptUid,
+    Guid TestUid,
+    Guid UserUid,
+    decimal Score,
+    decimal MaxScore,
+    decimal Percent,
+    int PassingScore,
+    bool Passed,
+    DateTimeOffset CompletedAt,
+    IReadOnlyList<QuestionResultDto> QuestionResults);
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Contracts\Attempts\StartAttemptResponse.cs ===
+using TestTakingService.Contracts.Snapshots;
+
+namespace TestTakingService.Contracts.Attempts;
+
+public record StartAttemptResponse(
+    Guid AttemptUid,
+    Guid TestUid,
+    string Status,
+    DateTimeOffset StartedAt,
+    DateTimeOffset? ExpiresAt,
+    TestSnapshotDto TestSnapshot);
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Contracts\Attempts\SubmitAnswerRequest.cs ===
+namespace TestTakingService.Contracts.Attempts;
+
+public record SubmitAnswerRequest
+{
+    public required Guid QuestionUid { get; init; }
+    public IReadOnlyList<Guid> SelectedOptionUids { get; init; } = [];
+    public string? TextAnswer { get; init; }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Contracts\Snapshots\QuestionGradingSnapshot.cs ===
+using System.Text.Json.Serialization;
+
+namespace TestTakingService.Contracts.Snapshots;
+
+public record AnswerOptionGradingSnapshot(
+    Guid Uid,
+    string Text,
+    bool? IsCorrect,
+    int Position);
+
+public record QuestionGradingSnapshot(
+    Guid QuestionUid,
+    string Title,
+    string Text,
+    [property: JsonPropertyName("type")]
+    string QuestionType,
+    int OrderIndex,
+    int Points,
+    [property: JsonPropertyName("correctText")]
+    string? CorrectTextAnswer,
+    IReadOnlyList<AnswerOptionGradingSnapshot> Options);
+
+public record TestGradingSnapshot(
+    Guid TestUid,
+    Guid AuthorUid,
+    string Title,
+    string? Description,
+    int? TimeLimitSeconds,
+    int? MaxAttempts,
+    int PassingScore,
+    DateTimeOffset? StartsAt,
+    DateTimeOffset? EndsAt,
+    string Status,
+    IReadOnlyList<QuestionGradingSnapshot> Questions);
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Contracts\Snapshots\QuestionSnapshotDto.cs ===
+namespace TestTakingService.Contracts.Snapshots;
+
+public record AnswerOptionSnapshotDto(
+    Guid Uid,
+    string Text,
+    int Position);
+
+public record QuestionSnapshotDto(
+    Guid QuestionUid,
+    string Title,
+    string Text,
+    string QuestionType,
+    int OrderIndex,
+    int Points,
+    IReadOnlyList<AnswerOptionSnapshotDto> Options);
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Contracts\Snapshots\TestSnapshotDto.cs ===
+namespace TestTakingService.Contracts.Snapshots;
+
+public record TestSnapshotDto(
+    Guid TestUid,
+    string Title,
+    string? Description,
+    int? TimeLimitSeconds,
+    int PassingScore,
+    IReadOnlyList<QuestionSnapshotDto> Questions);
+
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Domain\Entities\Answer.cs ===
 namespace TestTakingService.Domain.Entities;
 
@@ -2866,6 +3017,114 @@ public sealed class AttemptOptionSnapshot
     public string Text { get; set; } = string.Empty;
     public bool? IsCorrect { get; set; }
     public int Position { get; set; }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Infrastructure\Caching\RedisAttemptSnapshotCache.cs ===
+using System.Text.Json;
+using Microsoft.Extensions.Caching.Distributed;
+using TestTakingService.Domain.ValueObjects;
+using TestTakingService.Services.Interfaces;
+
+namespace TestTakingService.Infrastructure.Caching;
+
+public class RedisAttemptSnapshotCache(IDistributedCache cache) : IAttemptSnapshotCache
+{
+    private const int BufferSeconds = 600;
+    private const int DefaultAttemptDurationSeconds = 24 * 60 * 60;
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public async Task SetAsync(
+        Guid attemptUid,
+        AttemptSnapshot snapshot,
+        int? timeLimitSeconds,
+        CancellationToken cancellationToken = default)
+    {
+        var baseSeconds = timeLimitSeconds is > 0
+            ? timeLimitSeconds.Value
+            : DefaultAttemptDurationSeconds;
+
+        var options = new DistributedCacheEntryOptions
+        {
+            AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(baseSeconds + BufferSeconds)
+        };
+
+        var payload = JsonSerializer.Serialize(snapshot, JsonOptions);
+        await cache.SetStringAsync(BuildKey(attemptUid), payload, options, cancellationToken);
+    }
+
+    public async Task<AttemptSnapshot?> GetAsync(
+        Guid attemptUid,
+        CancellationToken cancellationToken = default)
+    {
+        var payload = await cache.GetStringAsync(BuildKey(attemptUid), cancellationToken);
+        if (string.IsNullOrWhiteSpace(payload))
+            return null;
+
+        return JsonSerializer.Deserialize<AttemptSnapshot>(payload, JsonOptions);
+    }
+
+    public async Task RemoveAsync(
+        Guid attemptUid,
+        CancellationToken cancellationToken = default)
+    {
+        await cache.RemoveAsync(BuildKey(attemptUid), cancellationToken);
+    }
+
+    private static string BuildKey(Guid attemptUid) => $"attempt:snapshot:{attemptUid}";
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Infrastructure\HttpClients\TestCreationHttpClient.cs ===
+using System.Net;
+using System.Net.Http.Json;
+using Shared.Common.Exceptions;
+using TestTakingService.Contracts.Snapshots;
+using TestTakingService.Services.Interfaces;
+
+namespace TestTakingService.Infrastructure.HttpClients;
+
+public class TestCreationHttpClient(HttpClient httpClient) : ITestCreationClient
+{
+    public async Task<TestGradingSnapshot> GetTestSnapshotAsync(
+        Guid testUid,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync($"api/tests/{testUid}/snapshot", cancellationToken);
+
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            throw new NotFoundException($"Тест с Uid {testUid} не найден.");
+        }
+
+        if (response.StatusCode == HttpStatusCode.Forbidden)
+        {
+            throw new ForbiddenException("Тест скрыт или недоступен для прохождения.");
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new BadRequestException(
+                $"Не удалось получить данные теста из сервиса создания тестов (HTTP {(int)response.StatusCode}).");
+        }
+
+        var snapshot = await response.Content.ReadFromJsonAsync<TestGradingSnapshot>(cancellationToken)
+            ?? throw new InvalidOperationException($"Получен пустой снапшот для теста {testUid}.");
+
+        return snapshot;
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Infrastructure\Messaging\RabbitMqMessagePublisher.cs ===
+using MassTransit;
+using TestTakingService.Services.Interfaces;
+
+namespace TestTakingService.Infrastructure.Messaging;
+
+public class RabbitMqMessagePublisher(IPublishEndpoint publishEndpoint) : IMessagePublisher
+{
+    public Task PublishAsync<T>(T message, CancellationToken cancellationToken = default) where T : class
+    {
+        return publishEndpoint.Publish(message, cancellationToken);
+    }
 }
 
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Infrastructure\Persistence\Configurations\AnswerConfiguration.cs ===
@@ -3127,10 +3386,207 @@ public class TestTakingDbContext(DbContextOptions<TestTakingDbContext> options) 
     }
 }
 
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Services\Implementations\GradingService.cs ===
+using TestTakingService.Contracts.Attempts;
+using TestTakingService.Domain.Entities;
+using TestTakingService.Domain.ValueObjects;
+
+namespace TestTakingService.Services.Implementations;
+
+public sealed record GradedQuestionItem(
+    Guid QuestionUid,
+    bool IsCorrect,
+    decimal PointsEarned,
+    QuestionResultDto ResultDto);
+
+public sealed record GradingOutcome(
+    decimal TotalScore,
+    decimal MaxScore,
+    decimal Percentage,
+    bool Passed,
+    IReadOnlyList<GradedQuestionItem> Items);
+
+public class GradingService
+{
+    public GradingOutcome Grade(AttemptSnapshot snapshot, IReadOnlyCollection<Answer> answers)
+    {
+        var answersByQuestionUid = answers.ToDictionary(a => a.QuestionUid);
+        var gradedItems = new List<GradedQuestionItem>(snapshot.Questions.Count);
+
+        decimal totalScore = 0m;
+        decimal maxScore = 0m;
+
+        foreach (var question in snapshot.Questions.OrderBy(q => q.OrderIndex))
+        {
+            maxScore += question.Points;
+            answersByQuestionUid.TryGetValue(question.QuestionUid, out var answer);
+
+            var isCorrect = EvaluateQuestion(question, answer);
+            var pointsEarned = isCorrect ? question.Points : 0m;
+            totalScore += pointsEarned;
+
+            var selectedOptionUids = answer?.SelectedOptionUids ?? [];
+            var textAnswer = answer?.TextAnswer;
+
+            var resultDto = new QuestionResultDto(
+                QuestionUid: question.QuestionUid,
+                Title: question.Title,
+                QuestionType: question.QuestionType,
+                SelectedOptionUids: selectedOptionUids,
+                TextAnswer: textAnswer,
+                IsCorrect: isCorrect,
+                PointsEarned: pointsEarned,
+                MaxPoints: question.Points);
+
+            gradedItems.Add(new GradedQuestionItem(
+                QuestionUid: question.QuestionUid,
+                IsCorrect: isCorrect,
+                PointsEarned: pointsEarned,
+                ResultDto: resultDto));
+        }
+
+        var percentage = maxScore > 0m
+            ? Math.Round(totalScore / maxScore * 100m, 2, MidpointRounding.AwayFromZero)
+            : 0m;
+
+        var passed = percentage >= snapshot.PassingScore;
+
+        return new GradingOutcome(
+            TotalScore: totalScore,
+            MaxScore: maxScore,
+            Percentage: percentage,
+            Passed: passed,
+            Items: gradedItems);
+    }
+
+    private static bool EvaluateQuestion(AttemptQuestionSnapshot question, Answer? answer)
+    {
+        if (answer is null)
+            return false;
+
+        if (string.Equals(question.QuestionType, "TextInput", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(question.CorrectTextAnswer) || string.IsNullOrWhiteSpace(answer.TextAnswer))
+                return false;
+
+            return string.Equals(
+                question.CorrectTextAnswer.Trim(),
+                answer.TextAnswer.Trim(),
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        var correctOptionUids = question.Options
+            .Where(o => o.IsCorrect == true)
+            .Select(o => o.Uid)
+            .ToHashSet();
+
+        if (correctOptionUids.Count == 0 || answer.SelectedOptionUids.Count == 0)
+            return false;
+
+        var selectedSet = answer.SelectedOptionUids.ToHashSet();
+
+        if (string.Equals(question.QuestionType, "SingleChoice", StringComparison.OrdinalIgnoreCase))
+        {
+            return selectedSet.Count == 1 && correctOptionUids.SetEquals(selectedSet);
+        }
+
+        if (string.Equals(question.QuestionType, "MultipleChoice", StringComparison.OrdinalIgnoreCase))
+        {
+            return correctOptionUids.SetEquals(selectedSet);
+        }
+
+        return false;
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Services\Interfaces\IAttemptSnapshotCache.cs ===
+using TestTakingService.Domain.ValueObjects;
+
+namespace TestTakingService.Services.Interfaces;
+
+public interface IAttemptSnapshotCache
+{
+    Task SetAsync(Guid attemptUid, AttemptSnapshot snapshot, int? timeLimitSeconds, CancellationToken cancellationToken = default);
+    Task<AttemptSnapshot?> GetAsync(Guid attemptUid, CancellationToken cancellationToken = default);
+    Task RemoveAsync(Guid attemptUid, CancellationToken cancellationToken = default);
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Services\Interfaces\IMessagePublisher.cs ===
+namespace TestTakingService.Services.Interfaces;
+
+public interface IMessagePublisher
+{
+    Task PublishAsync<T>(T message, CancellationToken cancellationToken = default) where T : class;
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Services\Interfaces\ITestCreationClient.cs ===
+using TestTakingService.Contracts.Snapshots;
+
+namespace TestTakingService.Services.Interfaces;
+
+public interface ITestCreationClient
+{
+    Task<TestGradingSnapshot> GetTestSnapshotAsync(Guid testUid, CancellationToken cancellationToken = default);
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Validators\SubmitAnswerRequestValidator.cs ===
+using FluentValidation;
+using TestTakingService.Contracts.Attempts;
+
+namespace TestTakingService.Validators;
+
+public class SubmitAnswerRequestValidator : AbstractValidator<SubmitAnswerRequest>
+{
+    public SubmitAnswerRequestValidator()
+    {
+        RuleFor(x => x.QuestionUid)
+            .NotEmpty().WithMessage("Не указан идентификатор вопроса.");
+
+        RuleFor(x => x.SelectedOptionUids)
+            .Must(uids => uids.All(id => id != Guid.Empty))
+            .WithMessage("Список выбранных вариантов содержит пустой идентификатор.")
+            .Must(uids => uids.Distinct().Count() == uids.Count)
+            .WithMessage("Выбранные варианты ответа не должны дублироваться.");
+
+        RuleFor(x => x.TextAnswer)
+            .MaximumLength(500).WithMessage("Текстовый ответ не должен превышать 500 символов.")
+            .When(x => x.TextAnswer is not null);
+
+        RuleFor(x => x)
+            .Must(x => x.SelectedOptionUids.Count > 0 || !string.IsNullOrWhiteSpace(x.TextAnswer))
+            .WithMessage("Необходимо выбрать хотя бы один вариант ответа или ввести текстовый ответ.")
+            .Must(x => !(x.SelectedOptionUids.Count > 0 && !string.IsNullOrWhiteSpace(x.TextAnswer)))
+            .WithMessage("Нельзя одновременно передавать выбранные варианты и текстовый ответ.");
+    }
+}
+
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\appsettings.json ===
 {
   "ConnectionStrings": {
     "DefaultConnection": "Host=localhost;Port=5432;Database=KnowledgeDb;Username=postgres;Password=CHANGE_ME"
+  },
+  "Jwt": {
+    "SecretKey": "CHANGE_ME_SUPER_SECRET_KEY_AT_LEAST_32_CHARS",
+    "Issuer": "KnowledgeControl.UserService",
+    "Audience": "KnowledgeControl.Services",
+    "ExpirationMinutes": 60
+  },
+  "Services": {
+    "TestCreationService": {
+      "BaseUrl": "http://localhost:5002/",
+      "InternalApiKey": "CHANGE_ME_INTERNAL_API_KEY"
+    }
+  },
+  "Redis": {
+    "ConnectionString": "localhost:6379",
+    "InstanceName": "KnowledgeControl:"
+  },
+  "RabbitMq": {
+    "Host": "localhost",
+    "Port": 5672,
+    "VirtualHost": "/",
+    "Username": "admin",
+    "Password": "CHANGE_ME"
   },
   "Logging": {
     "LogLevel": {
@@ -3143,10 +3599,16 @@ public class TestTakingDbContext(DbContextOptions<TestTakingDbContext> options) 
 
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Program.cs ===
 using FluentValidation;
+using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
 using Shared.Common.Extensions;
+using TestTakingService.Infrastructure.Caching;
+using TestTakingService.Infrastructure.HttpClients;
+using TestTakingService.Infrastructure.Messaging;
 using TestTakingService.Infrastructure.Persistence;
+using TestTakingService.Services.Implementations;
+using TestTakingService.Services.Interfaces;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -3162,6 +3624,50 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
 builder.Services.AddDbContext<TestTakingDbContext>(options =>
     options.UseNpgsql(connectionString, npgsql =>
         npgsql.MigrationsHistoryTable("__EFMigrationsHistory", TestTakingDbContext.SchemaName)));
+
+// Redis РєСЌС€ СЃРЅР°РїС€РѕС‚РѕРІ РїРѕРїС‹С‚РѕРє
+var redisConnection = builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379";
+builder.Services.AddStackExchangeRedisCache(options =>
+{
+    options.Configuration = redisConnection;
+    options.InstanceName = builder.Configuration["Redis:InstanceName"] ?? "KnowledgeControl:";
+});
+
+// РўРёРїРёР·РёСЂРѕРІР°РЅРЅС‹Р№ HttpClient Рє TestCreationService
+builder.Services.AddHttpClient<ITestCreationClient, TestCreationHttpClient>(client =>
+{
+    var baseUrl = builder.Configuration["Services:TestCreationService:BaseUrl"]
+        ?? throw new InvalidOperationException("Services:TestCreationService:BaseUrl is not configured.");
+    var internalApiKey = builder.Configuration["Services:TestCreationService:InternalApiKey"]
+        ?? throw new InvalidOperationException("Services:TestCreationService:InternalApiKey is not configured.");
+
+    client.BaseAddress = new Uri(baseUrl);
+    client.DefaultRequestHeaders.Add("X-Internal-Api-Key", internalApiKey);
+});
+
+// RabbitMQ + MassTransit
+builder.Services.AddMassTransit(x =>
+{
+    x.UsingRabbitMq((context, cfg) =>
+    {
+        var rabbitSection = builder.Configuration.GetSection("RabbitMq");
+        var host = rabbitSection["Host"] ?? "localhost";
+        var port = rabbitSection.GetValue<ushort?>("Port") ?? 5672;
+        var virtualHost = rabbitSection["VirtualHost"] ?? "/";
+        var username = rabbitSection["Username"] ?? "guest";
+        var password = rabbitSection["Password"] ?? "guest";
+
+        cfg.Host(host, port, virtualHost, h =>
+        {
+            h.Username(username);
+            h.Password(password);
+        });
+    });
+});
+
+builder.Services.AddScoped<IAttemptSnapshotCache, RedisAttemptSnapshotCache>();
+builder.Services.AddScoped<IMessagePublisher, RabbitMqMessagePublisher>();
+builder.Services.AddSingleton<GradingService>();
 
 var app = builder.Build();
 
@@ -3190,6 +3696,7 @@ app.Run();
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.3" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
     <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />

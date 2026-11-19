@@ -328,10 +328,6 @@ public record TestUpdatedEvent
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
-  <ItemGroup>
-    <Folder Include="Events\" />
-  </ItemGroup>
-
 </Project>
 
 
@@ -1201,6 +1197,55 @@ public class TestCreationDbContext : DbContext
     }
 }
 
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Data\TestCreationDbSeeder.cs ===
+using Microsoft.EntityFrameworkCore;
+using TestCreationService.Domain.Entities;
+
+namespace TestCreationService.Data;
+
+public static class TestCreationDbSeeder
+{
+    public static async Task SeedCategoriesAsync(this WebApplication app)
+    {
+        using var scope = app.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<TestCreationDbContext>();
+
+        if (await dbContext.Categories.AnyAsync())
+            return;
+
+        var categories = new List<Category>
+        {
+            new()
+            {
+                Uid = Guid.Parse("11111111-1111-1111-1111-111111111101"),
+                Name = "Программирование",
+                Description = "Алгоритмы, структуры данных, языки программирования и разработка ПО"
+            },
+            new()
+            {
+                Uid = Guid.Parse("11111111-1111-1111-1111-111111111102"),
+                Name = "Базы данных",
+                Description = "Реляционные и NoSQL СУБД, SQL, проектирование схем и оптимизация запросов"
+            },
+            new()
+            {
+                Uid = Guid.Parse("11111111-1111-1111-1111-111111111103"),
+                Name = "Компьютерные сети",
+                Description = "Сетевые протоколы, архитектура TCP/IP, маршрутизация и безопасность"
+            },
+            new()
+            {
+                Uid = Guid.Parse("11111111-1111-1111-1111-111111111104"),
+                Name = "Математика",
+                Description = "Дискретная математика, линейная алгебра, теория вероятностей и матстатистика"
+            }
+        };
+
+        dbContext.Categories.AddRange(categories);
+        await dbContext.SaveChangesAsync();
+    }
+}
+
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Domain\Entities\AnswerOption.cs ===
 namespace TestCreationService.Domain.Entities;
 
@@ -1217,6 +1262,8 @@ public class AnswerOption
 }
 
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Domain\Entities\Category.cs ===
+using static System.Net.Mime.MediaTypeNames;
+
 namespace TestCreationService.Domain.Entities;
 
 public class Category
@@ -2670,6 +2717,7 @@ builder.Services.AddScoped<IModerationService, ModerationService>();
 var app = builder.Build();
 
 await app.ApplyMigrationsAsync<TestCreationDbContext>();
+await app.SeedCategoriesAsync();
 
 app.UseCommonMiddleware(app.Environment);
 
@@ -2678,7 +2726,7 @@ app.UseAuthorization();
 
 app.MapControllers();
 
-app.Run();
+app.Run();  
 
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\TestCreationService.csproj ===
 <Project Sdk="Microsoft.NET.Sdk.Web">
@@ -2712,6 +2760,373 @@ app.Run();
 </Project>
 
 
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Domain\Entities\Answer.cs ===
+namespace TestTakingService.Domain.Entities;
+
+public class Answer
+{
+    public long Id { get; set; }
+    public long AttemptId { get; set; }
+    public Guid QuestionUid { get; set; }
+    public List<Guid> SelectedOptionUids { get; set; } = [];
+    public string? TextAnswer { get; set; }
+    public bool? IsCorrect { get; set; }
+    public decimal? PointsEarned { get; set; }
+    public DateTime AnsweredAt { get; set; } = DateTime.UtcNow;
+
+    public Attempt Attempt { get; set; } = null!;
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Domain\Entities\Attempt.cs ===
+using TestTakingService.Domain.Enums;
+using TestTakingService.Domain.ValueObjects;
+
+namespace TestTakingService.Domain.Entities;
+
+public class Attempt
+{
+    public long Id { get; set; }
+    public Guid Uid { get; set; } = Guid.NewGuid();
+    public Guid TestUid { get; set; }
+    public Guid UserUid { get; set; }
+    public AttemptStatus Status { get; set; } = AttemptStatus.InProgress;
+    public AttemptSnapshot Snapshot { get; set; } = new();
+    public int SnapshotVersion { get; set; } = 1;
+    public DateTime StartedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? FinishedAt { get; set; }
+    public DateTime? ExpiresAt { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+
+    public ICollection<Answer> Answers { get; set; } = new List<Answer>();
+    public Result? Result { get; set; }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Domain\Entities\Result.cs ===
+namespace TestTakingService.Domain.Entities;
+
+public class Result
+{
+    public long Id { get; set; }
+    public Guid Uid { get; set; } = Guid.NewGuid();
+    public long AttemptId { get; set; }
+    public Guid TestUid { get; set; }
+    public Guid UserUid { get; set; }
+    public decimal TotalScore { get; set; }
+    public decimal MaxScore { get; set; }
+    public decimal Percentage { get; set; }
+    public bool Passed { get; set; }
+    public DateTime CalculatedAt { get; set; } = DateTime.UtcNow;
+
+    public Attempt Attempt { get; set; } = null!;
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Domain\Enums\AttemptStatus.cs ===
+namespace TestTakingService.Domain.Enums;
+
+public enum AttemptStatus
+{
+    InProgress,
+    Completed,
+    Expired
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Domain\ValueObjects\AttemptSnapshot.cs ===
+namespace TestTakingService.Domain.ValueObjects;
+
+public sealed class AttemptSnapshot
+{
+    public Guid TestUid { get; set; }
+    public Guid AuthorUid { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public int? TimeLimitSeconds { get; set; }
+    public int? MaxAttempts { get; set; }
+    public int PassingScore { get; set; }
+    public DateTimeOffset? StartsAt { get; set; }
+    public DateTimeOffset? EndsAt { get; set; }
+    public List<AttemptQuestionSnapshot> Questions { get; set; } = [];
+}
+
+public sealed class AttemptQuestionSnapshot
+{
+    public Guid QuestionUid { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public string Text { get; set; } = string.Empty;
+    public string QuestionType { get; set; } = string.Empty;
+    public int OrderIndex { get; set; }
+    public int Points { get; set; }
+    public string? CorrectTextAnswer { get; set; }
+    public List<AttemptOptionSnapshot> Options { get; set; } = [];
+}
+
+public sealed class AttemptOptionSnapshot
+{
+    public Guid Uid { get; set; }
+    public string Text { get; set; } = string.Empty;
+    public bool? IsCorrect { get; set; }
+    public int Position { get; set; }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Infrastructure\Persistence\Configurations\AnswerConfiguration.cs ===
+using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using TestTakingService.Domain.Entities;
+
+namespace TestTakingService.Infrastructure.Persistence.Configurations;
+
+public class AnswerConfiguration : IEntityTypeConfiguration<Answer>
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public void Configure(EntityTypeBuilder<Answer> builder)
+    {
+        builder.ToTable("answers");
+
+        builder.HasKey(a => a.Id);
+        builder.Property(a => a.Id).HasColumnName("id");
+
+        builder.Property(a => a.AttemptId)
+            .HasColumnName("attempt_id")
+            .IsRequired();
+
+        builder.Property(a => a.QuestionUid)
+            .HasColumnName("question_uid")
+            .IsRequired();
+
+        builder.Property(a => a.SelectedOptionUids)
+            .HasColumnName("selected_option_uids")
+            .HasColumnType("jsonb")
+            .HasConversion(
+                v => JsonSerializer.Serialize(v, JsonOptions),
+                v => JsonSerializer.Deserialize<List<Guid>>(v, JsonOptions) ?? new List<Guid>(),
+                new ValueComparer<List<Guid>>(
+                    (l, r) => (l ?? new()).SequenceEqual(r ?? new()),
+                    v => v.Aggregate(0, (hash, item) => HashCode.Combine(hash, item.GetHashCode())),
+                    v => v.ToList()))
+            .IsRequired();
+
+        builder.Property(a => a.TextAnswer)
+            .HasColumnName("text_answer")
+            .HasMaxLength(500);
+
+        builder.Property(a => a.IsCorrect)
+            .HasColumnName("is_correct");
+
+        builder.Property(a => a.PointsEarned)
+            .HasColumnName("points_earned")
+            .HasPrecision(6, 2);
+
+        builder.Property(a => a.AnsweredAt)
+            .HasColumnName("answered_at")
+            .IsRequired();
+
+        // Ограничение UNIQUE(attempt_id, question_uid) для идемпотентного upsert ответа
+        builder.HasIndex(a => new { a.AttemptId, a.QuestionUid })
+            .IsUnique();
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Infrastructure\Persistence\Configurations\AttemptConfiguration.cs ===
+using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using TestTakingService.Domain.Entities;
+using TestTakingService.Domain.Enums;
+using TestTakingService.Domain.ValueObjects;
+
+namespace TestTakingService.Infrastructure.Persistence.Configurations;
+
+public class AttemptConfiguration : IEntityTypeConfiguration<Attempt>
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public void Configure(EntityTypeBuilder<Attempt> builder)
+    {
+        builder.ToTable("attempts");
+
+        builder.HasKey(a => a.Id);
+        builder.Property(a => a.Id).HasColumnName("id");
+
+        builder.Property(a => a.Uid)
+            .HasColumnName("uid")
+            .IsRequired();
+        builder.HasIndex(a => a.Uid).IsUnique();
+
+        builder.Property(a => a.TestUid)
+            .HasColumnName("test_uid")
+            .IsRequired();
+
+        builder.Property(a => a.UserUid)
+            .HasColumnName("user_uid")
+            .IsRequired();
+
+        builder.Property(a => a.Status)
+            .HasColumnName("status")
+            .HasConversion(
+                v => ToSnakeUpper(v),
+                v => FromSnakeUpper(v))
+            .HasMaxLength(20)
+            .HasDefaultValue(AttemptStatus.InProgress)
+            .IsRequired();
+
+        builder.Property(a => a.Snapshot)
+            .HasColumnName("snapshot")
+            .HasColumnType("jsonb")
+            .HasConversion(
+                v => JsonSerializer.Serialize(v, JsonOptions),
+                v => JsonSerializer.Deserialize<AttemptSnapshot>(v, JsonOptions) ?? new AttemptSnapshot(),
+                new ValueComparer<AttemptSnapshot>(
+                    (l, r) => JsonSerializer.Serialize(l, JsonOptions) == JsonSerializer.Serialize(r, JsonOptions),
+                    v => JsonSerializer.Serialize(v, JsonOptions).GetHashCode(),
+                    v => JsonSerializer.Deserialize<AttemptSnapshot>(
+                        JsonSerializer.Serialize(v, JsonOptions), JsonOptions) ?? new AttemptSnapshot()))
+            .IsRequired();
+
+        builder.Property(a => a.SnapshotVersion)
+            .HasColumnName("snapshot_version")
+            .HasDefaultValue(1)
+            .IsRequired();
+
+        builder.Property(a => a.StartedAt)
+            .HasColumnName("started_at")
+            .IsRequired();
+
+        builder.Property(a => a.FinishedAt)
+            .HasColumnName("finished_at");
+
+        builder.Property(a => a.ExpiresAt)
+            .HasColumnName("expires_at");
+
+        builder.Property(a => a.CreatedAt)
+            .HasColumnName("created_at")
+            .IsRequired();
+
+        builder.Property(a => a.UpdatedAt)
+            .HasColumnName("updated_at")
+            .IsRequired();
+
+        builder.HasIndex(a => new { a.UserUid, a.TestUid });
+        builder.HasIndex(a => a.Status);
+
+        builder.HasMany(a => a.Answers)
+            .WithOne(ans => ans.Attempt)
+            .HasForeignKey(ans => ans.AttemptId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasOne(a => a.Result)
+            .WithOne(r => r.Attempt)
+            .HasForeignKey<Result>(r => r.AttemptId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+
+    private static string ToSnakeUpper(AttemptStatus status) => status switch
+    {
+        AttemptStatus.InProgress => "IN_PROGRESS",
+        AttemptStatus.Completed => "COMPLETED",
+        AttemptStatus.Expired => "EXPIRED",
+        _ => status.ToString().ToUpperInvariant()
+    };
+
+    private static AttemptStatus FromSnakeUpper(string value) => value switch
+    {
+        "IN_PROGRESS" => AttemptStatus.InProgress,
+        "COMPLETED" => AttemptStatus.Completed,
+        "EXPIRED" => AttemptStatus.Expired,
+        _ => Enum.Parse<AttemptStatus>(value, ignoreCase: true)
+    };
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Infrastructure\Persistence\Configurations\ResultConfiguration.cs ===
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using TestTakingService.Domain.Entities;
+
+namespace TestTakingService.Infrastructure.Persistence.Configurations;
+
+public class ResultConfiguration : IEntityTypeConfiguration<Result>
+{
+    public void Configure(EntityTypeBuilder<Result> builder)
+    {
+        builder.ToTable("results");
+
+        builder.HasKey(r => r.Id);
+        builder.Property(r => r.Id).HasColumnName("id");
+
+        builder.Property(r => r.Uid)
+            .HasColumnName("uid")
+            .IsRequired();
+        builder.HasIndex(r => r.Uid).IsUnique();
+
+        builder.Property(r => r.AttemptId)
+            .HasColumnName("attempt_id")
+            .IsRequired();
+
+        builder.Property(r => r.TestUid)
+            .HasColumnName("test_uid")
+            .IsRequired();
+
+        builder.Property(r => r.UserUid)
+            .HasColumnName("user_uid")
+            .IsRequired();
+
+        builder.Property(r => r.TotalScore)
+            .HasColumnName("total_score")
+            .HasPrecision(6, 2)
+            .IsRequired();
+
+        builder.Property(r => r.MaxScore)
+            .HasColumnName("max_score")
+            .HasPrecision(6, 2)
+            .IsRequired();
+
+        builder.Property(r => r.Percentage)
+            .HasColumnName("percentage")
+            .HasPrecision(5, 2)
+            .IsRequired();
+
+        builder.Property(r => r.Passed)
+            .HasColumnName("passed")
+            .IsRequired();
+
+        builder.Property(r => r.CalculatedAt)
+            .HasColumnName("calculated_at")
+            .IsRequired();
+
+        // Связь 1:1 (FK + UNIQUE на attempt_id)
+        builder.HasIndex(r => r.AttemptId)
+            .IsUnique();
+
+        builder.HasIndex(r => new { r.UserUid, r.TestUid });
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Infrastructure\Persistence\TestTakingDbContext.cs ===
+using Microsoft.EntityFrameworkCore;
+using TestTakingService.Domain.Entities;
+
+namespace TestTakingService.Infrastructure.Persistence;
+
+public class TestTakingDbContext(DbContextOptions<TestTakingDbContext> options) : DbContext(options)
+{
+    public const string SchemaName = "test_taking_schema";
+
+    public DbSet<Attempt> Attempts => Set<Attempt>();
+    public DbSet<Answer> Answers => Set<Answer>();
+    public DbSet<Result> Results => Set<Result>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+
+        modelBuilder.HasDefaultSchema(SchemaName);
+        modelBuilder.ApplyConfigurationsFromAssembly(typeof(TestTakingDbContext).Assembly);
+    }
+}
+
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\appsettings.json ===
 {
   "ConnectionStrings": {
@@ -2728,8 +3143,10 @@ app.Run();
 
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Program.cs ===
 using FluentValidation;
+using Microsoft.EntityFrameworkCore;
 using Serilog;
 using Shared.Common.Extensions;
+using TestTakingService.Infrastructure.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -2739,10 +3156,18 @@ builder.Host.UseSerilog();
 builder.Services.AddCommonWebServices("Test Taking Service API");
 builder.Services.AddValidatorsFromAssembly(typeof(Program).Assembly);
 
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
+    ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is not configured.");
+
+builder.Services.AddDbContext<TestTakingDbContext>(options =>
+    options.UseNpgsql(connectionString, npgsql =>
+        npgsql.MigrationsHistoryTable("__EFMigrationsHistory", TestTakingDbContext.SchemaName)));
+
 var app = builder.Build();
 
+await app.ApplyMigrationsAsync<TestTakingDbContext>();
+
 app.UseCommonMiddleware(app.Environment);
-app.UseHttpsRedirection();
 app.UseAuthorization();
 app.MapControllers();
 

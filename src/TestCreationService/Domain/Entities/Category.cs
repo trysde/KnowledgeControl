@@ -1,4 +1,6 @@
-﻿namespace TestCreationService.Domain.Entities;
+﻿using static System.Net.Mime.MediaTypeNames;
+
+namespace TestCreationService.Domain.Entities;
 
 public class Category
 {

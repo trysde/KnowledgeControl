@@ -1,6 +1,9 @@
+using System.Text;
 using FluentValidation;
 using MassTransit;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using Serilog;
 using Shared.Common.Extensions;
 using TestTakingService.Infrastructure.Caching;
@@ -9,6 +12,7 @@ using TestTakingService.Infrastructure.Messaging;
 using TestTakingService.Infrastructure.Persistence;
 using TestTakingService.Services.Implementations;
 using TestTakingService.Services.Interfaces;
+using UserService.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -24,6 +28,32 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
 builder.Services.AddDbContext<TestTakingDbContext>(options =>
     options.UseNpgsql(connectionString, npgsql =>
         npgsql.MigrationsHistoryTable("__EFMigrationsHistory", TestTakingDbContext.SchemaName)));
+
+var jwtSection = builder.Configuration.GetSection(JwtOptions.SectionName);
+builder.Services.Configure<JwtOptions>(jwtSection);
+
+var jwtOptions = jwtSection.Get<JwtOptions>()
+    ?? throw new InvalidOperationException("JWT configuration section is missing.");
+
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.MapInboundClaims = false;
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = jwtOptions.Issuer,
+            ValidateAudience = true,
+            ValidAudience = jwtOptions.Audience,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.SecretKey)),
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.Zero
+        };
+    });
+
+builder.Services.AddAuthorization();
 
 // Redis кэш снапшотов попыток
 var redisConnection = builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379";
@@ -70,13 +100,15 @@ builder.Services.AddScoped<IMessagePublisher, RabbitMqMessagePublisher>();
 builder.Services.AddSingleton<GradingService>();
 builder.Services.AddScoped<IAttemptService, AttemptService>();
 
-
 var app = builder.Build();
 
 await app.ApplyMigrationsAsync<TestTakingDbContext>();
 
 app.UseCommonMiddleware(app.Environment);
+
+app.UseAuthentication();
 app.UseAuthorization();
+
 app.MapControllers();
 
 app.Run();

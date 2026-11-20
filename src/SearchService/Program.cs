@@ -1,5 +1,7 @@
 using FluentValidation;
+using MassTransit;
 using Microsoft.EntityFrameworkCore;
+using SearchService.Consumers;
 using SearchService.Infrastructure.Caching;
 using SearchService.Infrastructure.Persistence;
 using SearchService.Services.Implementations;
@@ -28,6 +30,35 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
 builder.Services.AddDbContext<SearchDbContext>(options =>
     options.UseNpgsql(connectionString, npgsql =>
         npgsql.MigrationsHistoryTable("__EFMigrationsHistory", "search_schema")));
+
+builder.Services.AddMassTransit(x =>
+{
+    x.SetKebabCaseEndpointNameFormatter();
+    x.AddConsumersFromNamespaceContaining<TestPublishedConsumer>();
+
+    x.UsingRabbitMq((context, cfg) =>
+    {
+        var rabbitSection = builder.Configuration.GetSection("RabbitMq");
+        var host = rabbitSection["Host"] ?? "localhost";
+        var port = rabbitSection.GetValue<ushort?>("Port") ?? 5672;
+        var virtualHost = rabbitSection["VirtualHost"] ?? "/";
+        var username = rabbitSection["Username"] ?? "guest";
+        var password = rabbitSection["Password"] ?? "guest";
+
+        cfg.Host(host, port, virtualHost, h =>
+        {
+            h.Username(username);
+            h.Password(password);
+        });
+
+        cfg.UseMessageRetry(r => r.Intervals(
+            TimeSpan.FromSeconds(1),
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromSeconds(15)));
+
+        cfg.ConfigureEndpoints(context);
+    });
+});
 
 builder.Services.AddScoped<ISearchCache, RedisSearchCache>();
 builder.Services.AddScoped<ISearchService, SearchService.Services.Implementations.SearchService>();

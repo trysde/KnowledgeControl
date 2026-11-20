@@ -1,7 +1,6 @@
 ﻿using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
-using NpgsqlTypes;
 using SearchService.Contracts.Catalog;
 using SearchService.Contracts.Common;
 using SearchService.Contracts.Search;
@@ -58,27 +57,40 @@ public class SearchService(
             baseQuery = baseQuery.Where(x => x.AuthorUid == request.Author.Value);
         }
 
-        NpgsqlTsQuery? tsQuery = null;
-        if (normalizedQuery is not null)
+        var hasTextQuery = normalizedQuery is not null;
+        if (hasTextQuery)
         {
-            tsQuery = EF.Functions.WebSearchToTsQuery("russian", normalizedQuery);
-            baseQuery = baseQuery.Where(x => x.SearchVector.Matches(tsQuery));
+            baseQuery = baseQuery.Where(x =>
+                x.SearchVector.Matches(EF.Functions.WebSearchToTsQuery("russian", normalizedQuery!)));
         }
 
         var totalCount = await baseQuery.CountAsync(cancellationToken);
 
-        var joinedQuery = from idx in baseQuery
-                          join stats in dbContext.TestStatistics.AsNoTracking()
-                              on idx.TestUid equals stats.TestUid into statsGroup
-                          from stats in statsGroup.DefaultIfEmpty()
-                          select new SearchProjection
-                          {
-                              Index = idx,
-                              TotalAttempts = stats != null ? stats.TotalAttempts : 0,
-                              PassRate = stats != null ? stats.PassRate : 0m,
-                              AvgScore = stats != null ? stats.AvgScore : 0m,
-                              Rank = tsQuery != null ? idx.SearchVector.Rank(tsQuery) : 0f
-                          };
+        var joinedQuery = hasTextQuery
+            ? from idx in baseQuery
+              join stats in dbContext.TestStatistics.AsNoTracking()
+                  on idx.TestUid equals stats.TestUid into statsGroup
+              from stats in statsGroup.DefaultIfEmpty()
+              select new SearchProjection
+              {
+                  Index = idx,
+                  TotalAttempts = stats != null ? stats.TotalAttempts : 0,
+                  PassRate = stats != null ? stats.PassRate : 0m,
+                  AvgScore = stats != null ? stats.AvgScore : 0m,
+                  Rank = idx.SearchVector.Rank(EF.Functions.WebSearchToTsQuery("russian", normalizedQuery!))
+              }
+            : from idx in baseQuery
+              join stats in dbContext.TestStatistics.AsNoTracking()
+                  on idx.TestUid equals stats.TestUid into statsGroup
+              from stats in statsGroup.DefaultIfEmpty()
+              select new SearchProjection
+              {
+                  Index = idx,
+                  TotalAttempts = stats != null ? stats.TotalAttempts : 0,
+                  PassRate = stats != null ? stats.PassRate : 0m,
+                  AvgScore = stats != null ? stats.AvgScore : 0m,
+                  Rank = 0f
+              };
 
         joinedQuery = normalizedSort switch
         {
@@ -93,7 +105,7 @@ public class SearchService(
             "avg_score" => joinedQuery
                 .OrderByDescending(x => x.AvgScore)
                 .ThenByDescending(x => x.TotalAttempts),
-            _ => tsQuery != null
+            _ => hasTextQuery
                 ? joinedQuery
                     .OrderByDescending(x => x.Rank)
                     .ThenByDescending(x => x.TotalAttempts)

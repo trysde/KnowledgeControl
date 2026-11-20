@@ -5467,6 +5467,60 @@ public class TestStatistics
     public DateTime? LastAttemptAt { get; set; }
 }
 
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Infrastructure\Caching\RedisSearchCache.cs ===
+using System.Text.Json;
+using Microsoft.Extensions.Caching.Distributed;
+using SearchService.Services.Interfaces;
+
+namespace SearchService.Infrastructure.Caching;
+
+public class RedisSearchCache(IDistributedCache cache) : ISearchCache
+{
+    private const string VersionKey = "catalog:version";
+    private static readonly TimeSpan DefaultTtl = TimeSpan.FromMinutes(5);
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public async Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default)
+    {
+        var payload = await cache.GetStringAsync(key, cancellationToken);
+        if (string.IsNullOrWhiteSpace(payload))
+            return default;
+
+        return JsonSerializer.Deserialize<T>(payload, JsonOptions);
+    }
+
+    public async Task SetAsync<T>(
+        string key,
+        T value,
+        TimeSpan? ttl = null,
+        CancellationToken cancellationToken = default)
+    {
+        var options = new DistributedCacheEntryOptions
+        {
+            AbsoluteExpirationRelativeToNow = ttl ?? DefaultTtl
+        };
+
+        var payload = JsonSerializer.Serialize(value, JsonOptions);
+        await cache.SetStringAsync(key, payload, options, cancellationToken);
+    }
+
+    public async Task<long> GetVersionAsync(CancellationToken cancellationToken = default)
+    {
+        var raw = await cache.GetStringAsync(VersionKey, cancellationToken);
+        if (long.TryParse(raw, out var version))
+            return version;
+
+        await cache.SetStringAsync(VersionKey, "1", cancellationToken);
+        return 1;
+    }
+
+    public async Task InvalidateAllAsync(CancellationToken cancellationToken = default)
+    {
+        var current = await GetVersionAsync(cancellationToken);
+        await cache.SetStringAsync(VersionKey, (current + 1).ToString(), cancellationToken);
+    }
+}
+
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Infrastructure\Persistence\SearchDbContext.cs ===
 using Microsoft.EntityFrameworkCore;
 using SearchService.Domain.Entities;
@@ -5525,6 +5579,10 @@ public class SearchDbContext : DbContext
                 .HasMaxLength(100);
             entity.HasIndex(e => e.Subject);
 
+            entity.Property(e => e.Tags)
+                .HasColumnName("tags")
+                .HasMaxLength(500);
+
             entity.Property(e => e.IsPublic)
                 .HasColumnName("is_public")
                 .HasDefaultValue(true)
@@ -5537,13 +5595,16 @@ public class SearchDbContext : DbContext
                 .IsRequired();
 
             entity.Property(e => e.SearchVector)
-                .HasColumnName("search_vector");
+                .HasColumnName("search_vector")
+                .HasComputedColumnSql(
+                    "setweight(to_tsvector('russian', coalesce(title, '')), 'A') || " +
+                    "setweight(to_tsvector('russian', coalesce(description, '')), 'B') || " +
+                    "setweight(to_tsvector('russian', coalesce(tags, '')), 'B') || " +
+                    "setweight(to_tsvector('russian', coalesce(subject, '')), 'C') || " +
+                    "setweight(to_tsvector('russian', coalesce(author_name, '')), 'C')",
+                    stored: true);
 
-            entity.HasGeneratedTsVectorColumn(
-                    e => e.SearchVector,
-                    "russian",
-                    e => new { e.Title, e.Description, e.Subject, e.AuthorName })
-                .HasIndex(e => e.SearchVector)
+            entity.HasIndex(e => e.SearchVector)
                 .HasMethod("GIN");
 
             entity.Property(e => e.UpdatedAt)
@@ -5614,6 +5675,599 @@ public class SearchDbContext : DbContext
     }
 }
 
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Services\Implementations\IndexService.cs ===
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using SearchService.Domain.Entities;
+using SearchService.Infrastructure.Persistence;
+using SearchService.Services.Interfaces;
+using Shared.Contracts.Events;
+
+namespace SearchService.Services.Implementations;
+
+public class IndexService(
+    SearchDbContext dbContext,
+    ISearchCache searchCache,
+    ILogger<IndexService> logger) : IIndexService
+{
+    public async Task OnPublishedAsync(
+        TestPublishedEvent message,
+        CancellationToken cancellationToken = default)
+    {
+        await UpsertIndexAsync(
+            testUid: message.TestUid,
+            title: message.Title,
+            description: message.Description,
+            authorUid: message.AuthorUid,
+            category: message.Category,
+            tags: message.Tags,
+            updatedAt: message.PublishedAt.UtcDateTime,
+            cancellationToken: cancellationToken);
+
+        logger.LogInformation("Тест {TestUid} добавлен/обновлён в поисковом индексе.", message.TestUid);
+    }
+
+    public async Task OnUpdatedAsync(
+        TestUpdatedEvent message,
+        CancellationToken cancellationToken = default)
+    {
+        await UpsertIndexAsync(
+            testUid: message.TestUid,
+            title: message.Title,
+            description: message.Description,
+            authorUid: message.AuthorUid,
+            category: message.Category,
+            tags: message.Tags,
+            updatedAt: message.OccurredAt.UtcDateTime,
+            cancellationToken: cancellationToken);
+
+        logger.LogInformation("Поисковый индекс теста {TestUid} обновлён.", message.TestUid);
+    }
+
+    public async Task OnUnpublishedAsync(
+        TestUnpublishedEvent message,
+        CancellationToken cancellationToken = default)
+    {
+        var deletedCount = await dbContext.SearchIndices
+            .Where(x => x.TestUid == message.TestUid)
+            .ExecuteDeleteAsync(cancellationToken);
+
+        if (deletedCount > 0)
+        {
+            await searchCache.InvalidateAllAsync(cancellationToken);
+        }
+
+        logger.LogInformation("Тест {TestUid} удалён из поискового индекса (удалено записей: {Count}).",
+            message.TestUid, deletedCount);
+    }
+
+    private async Task UpsertIndexAsync(
+        Guid testUid,
+        string title,
+        string? description,
+        Guid authorUid,
+        string category,
+        IReadOnlyList<string> tags,
+        DateTime updatedAt,
+        CancellationToken cancellationToken)
+    {
+        var existing = await dbContext.SearchIndices
+            .FirstOrDefaultAsync(x => x.TestUid == testUid, cancellationToken);
+
+        var formattedTags = FormatTags(tags);
+        var trimmedTitle = Truncate(title.Trim(), 255);
+        var trimmedDescription = string.IsNullOrWhiteSpace(description) ? null : description.Trim();
+        var trimmedSubject = string.IsNullOrWhiteSpace(category) ? null : Truncate(category.Trim(), 100);
+
+        if (existing is null)
+        {
+            dbContext.SearchIndices.Add(new SearchIndex
+            {
+                TestUid = testUid,
+                Title = trimmedTitle,
+                Description = trimmedDescription,
+                AuthorUid = authorUid,
+                AuthorName = string.Empty,
+                Subject = trimmedSubject,
+                Tags = formattedTags,
+                IsPublic = true,
+                QuestionCount = 0,
+                UpdatedAt = updatedAt
+            });
+        }
+        else
+        {
+            // Защита от устаревших (out-of-order) событий из очереди
+            if (updatedAt < existing.UpdatedAt)
+            {
+                logger.LogDebug("Пропущено устаревшее событие индексации для теста {TestUid}.", testUid);
+                return;
+            }
+
+            existing.Title = trimmedTitle;
+            existing.Description = trimmedDescription;
+            existing.AuthorUid = authorUid;
+            existing.Subject = trimmedSubject;
+            existing.Tags = formattedTags;
+            existing.IsPublic = true;
+            existing.UpdatedAt = updatedAt;
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await searchCache.InvalidateAllAsync(cancellationToken);
+    }
+
+    private static string? FormatTags(IReadOnlyList<string> tags)
+    {
+        if (tags.Count == 0)
+            return null;
+
+        var joined = string.Join(", ", tags
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Select(t => t.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase));
+
+        return string.IsNullOrEmpty(joined) ? null : Truncate(joined, 500);
+    }
+
+    private static string Truncate(string value, int maxLength) =>
+        value.Length <= maxLength ? value : value[..maxLength];
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Services\Implementations\SearchService.cs ===
+using Microsoft.EntityFrameworkCore;
+using NpgsqlTypes;
+using SearchService.Contracts.Catalog;
+using SearchService.Contracts.Common;
+using SearchService.Contracts.Search;
+using SearchService.Domain.Entities;
+using SearchService.Infrastructure.Persistence;
+using SearchService.Services.Interfaces;
+
+namespace SearchService.Services.Implementations;
+
+public class SearchService(
+    SearchDbContext dbContext,
+    ISearchCache searchCache) : ISearchService
+{
+    private static readonly TimeSpan SearchCacheTtl = TimeSpan.FromMinutes(3);
+    private static readonly TimeSpan CatalogCacheTtl = TimeSpan.FromMinutes(5);
+
+    public async Task<PagedResponse<SearchResponse>> SearchAsync(
+        SearchTestsRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedQuery = string.IsNullOrWhiteSpace(request.Q) ? null : request.Q.Trim();
+        var normalizedCategory = string.IsNullOrWhiteSpace(request.Category) ? null : request.Category.Trim();
+        var normalizedTag = string.IsNullOrWhiteSpace(request.Tag) ? null : request.Tag.Trim();
+        var normalizedSort = string.IsNullOrWhiteSpace(request.Sort)
+            ? "relevance"
+            : request.Sort.Trim().ToLowerInvariant();
+
+        var version = await searchCache.GetVersionAsync(cancellationToken);
+        var cacheKey = $"v{version}:search:q={normalizedQuery}:cat={normalizedCategory}:tag={normalizedTag}:author={request.Author}:sort={normalizedSort}:p={request.Page}:s={request.Size}";
+
+        var cached = await searchCache.GetAsync<PagedResponse<SearchResponse>>(cacheKey, cancellationToken);
+        if (cached is not null)
+            return cached;
+
+        var baseQuery = dbContext.SearchIndices
+            .AsNoTracking()
+            .Where(x => x.IsPublic);
+
+        if (normalizedCategory is not null)
+        {
+            baseQuery = baseQuery.Where(x => x.Subject != null && EF.Functions.ILike(x.Subject, normalizedCategory));
+        }
+
+        if (normalizedTag is not null)
+        {
+            var tagPattern = $"%{EscapeLikePattern(normalizedTag)}%";
+            baseQuery = baseQuery.Where(x => x.Tags != null && EF.Functions.ILike(x.Tags, tagPattern));
+        }
+
+        if (request.Author.HasValue)
+        {
+            baseQuery = baseQuery.Where(x => x.AuthorUid == request.Author.Value);
+        }
+
+        NpgsqlTsQuery? tsQuery = null;
+        if (normalizedQuery is not null)
+        {
+            tsQuery = EF.Functions.WebSearchToTsQuery("russian", normalizedQuery);
+            baseQuery = baseQuery.Where(x => x.SearchVector.Matches(tsQuery));
+        }
+
+        var totalCount = await baseQuery.CountAsync(cancellationToken);
+
+        var joinedQuery = from idx in baseQuery
+                          join stats in dbContext.TestStatistics.AsNoTracking()
+                              on idx.TestUid equals stats.TestUid into statsGroup
+                          from stats in statsGroup.DefaultIfEmpty()
+                          select new SearchProjection
+                          {
+                              Index = idx,
+                              TotalAttempts = stats != null ? stats.TotalAttempts : 0,
+                              PassRate = stats != null ? stats.PassRate : 0m,
+                              AvgScore = stats != null ? stats.AvgScore : 0m,
+                              Rank = tsQuery != null ? idx.SearchVector.Rank(tsQuery) : 0f
+                          };
+
+        joinedQuery = normalizedSort switch
+        {
+            "popular" => joinedQuery
+                .OrderByDescending(x => x.TotalAttempts)
+                .ThenByDescending(x => x.Index.UpdatedAt),
+            "newest" => joinedQuery
+                .OrderByDescending(x => x.Index.UpdatedAt),
+            "pass_rate" => joinedQuery
+                .OrderByDescending(x => x.PassRate)
+                .ThenByDescending(x => x.TotalAttempts),
+            "avg_score" => joinedQuery
+                .OrderByDescending(x => x.AvgScore)
+                .ThenByDescending(x => x.TotalAttempts),
+            _ => tsQuery != null
+                ? joinedQuery
+                    .OrderByDescending(x => x.Rank)
+                    .ThenByDescending(x => x.TotalAttempts)
+                    .ThenByDescending(x => x.Index.UpdatedAt)
+                : joinedQuery
+                    .OrderByDescending(x => x.Index.UpdatedAt)
+        };
+
+        var rows = await joinedQuery
+            .Skip((request.Page - 1) * request.Size)
+            .Take(request.Size)
+            .ToListAsync(cancellationToken);
+
+        var items = rows
+            .Select(r => new SearchResponse(
+                TestUid: r.Index.TestUid,
+                Title: r.Index.Title,
+                Description: r.Index.Description,
+                AuthorUid: r.Index.AuthorUid,
+                AuthorName: r.Index.AuthorName,
+                Subject: r.Index.Subject,
+                QuestionCount: r.Index.QuestionCount,
+                TotalAttempts: r.TotalAttempts,
+                PassRate: r.PassRate,
+                AvgScore: r.AvgScore,
+                Rank: r.Rank,
+                UpdatedAt: new DateTimeOffset(r.Index.UpdatedAt, TimeSpan.Zero)))
+            .ToList();
+
+        var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)request.Size);
+        var result = new PagedResponse<SearchResponse>(items, request.Page, request.Size, totalCount, totalPages);
+
+        await searchCache.SetAsync(cacheKey, result, SearchCacheTtl, cancellationToken);
+        return result;
+    }
+
+    public async Task<PagedResponse<CatalogItemResponse>> GetCatalogAsync(
+        string? category,
+        int page,
+        int size,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedCategory = string.IsNullOrWhiteSpace(category) ? null : category.Trim();
+        var version = await searchCache.GetVersionAsync(cancellationToken);
+        var cacheKey = $"v{version}:catalog:cat={normalizedCategory}:p={page}:s={size}";
+
+        var cached = await searchCache.GetAsync<PagedResponse<CatalogItemResponse>>(cacheKey, cancellationToken);
+        if (cached is not null)
+            return cached;
+
+        var baseQuery = dbContext.SearchIndices
+            .AsNoTracking()
+            .Where(x => x.IsPublic);
+
+        if (normalizedCategory is not null)
+        {
+            baseQuery = baseQuery.Where(x => x.Subject != null && EF.Functions.ILike(x.Subject, normalizedCategory));
+        }
+
+        var totalCount = await baseQuery.CountAsync(cancellationToken);
+
+        var rows = await (from idx in baseQuery
+                          join stats in dbContext.TestStatistics.AsNoTracking()
+                              on idx.TestUid equals stats.TestUid into statsGroup
+                          from stats in statsGroup.DefaultIfEmpty()
+                          orderby idx.UpdatedAt descending
+                          select new CatalogProjection
+                          {
+                              Index = idx,
+                              TotalAttempts = stats != null ? stats.TotalAttempts : 0,
+                              PassRate = stats != null ? stats.PassRate : 0m,
+                              AvgScore = stats != null ? stats.AvgScore : 0m
+                          })
+            .Skip((page - 1) * size)
+            .Take(size)
+            .ToListAsync(cancellationToken);
+
+        var items = rows.Select(MapToCatalogItem).ToList();
+        var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)size);
+        var result = new PagedResponse<CatalogItemResponse>(items, page, size, totalCount, totalPages);
+
+        await searchCache.SetAsync(cacheKey, result, CatalogCacheTtl, cancellationToken);
+        return result;
+    }
+
+    public async Task<IReadOnlyList<CatalogItemResponse>> GetPopularAsync(
+        int limit = 10,
+        CancellationToken cancellationToken = default)
+    {
+        var clampedLimit = Math.Clamp(limit, 1, 50);
+        var version = await searchCache.GetVersionAsync(cancellationToken);
+        var cacheKey = $"v{version}:catalog:popular:l={clampedLimit}";
+
+        var cached = await searchCache.GetAsync<List<CatalogItemResponse>>(cacheKey, cancellationToken);
+        if (cached is not null)
+            return cached;
+
+        var rows = await (from idx in dbContext.SearchIndices.AsNoTracking()
+                          where idx.IsPublic
+                          join stats in dbContext.TestStatistics.AsNoTracking()
+                              on idx.TestUid equals stats.TestUid into statsGroup
+                          from stats in statsGroup.DefaultIfEmpty()
+                          let attempts = stats != null ? stats.TotalAttempts : 0
+                          orderby attempts descending, idx.UpdatedAt descending
+                          select new CatalogProjection
+                          {
+                              Index = idx,
+                              TotalAttempts = attempts,
+                              PassRate = stats != null ? stats.PassRate : 0m,
+                              AvgScore = stats != null ? stats.AvgScore : 0m
+                          })
+            .Take(clampedLimit)
+            .ToListAsync(cancellationToken);
+
+        var items = rows.Select(MapToCatalogItem).ToList();
+        await searchCache.SetAsync(cacheKey, items, CatalogCacheTtl, cancellationToken);
+        return items;
+    }
+
+    public async Task<IReadOnlyList<CatalogItemResponse>> GetNewAsync(
+        int limit = 10,
+        CancellationToken cancellationToken = default)
+    {
+        var clampedLimit = Math.Clamp(limit, 1, 50);
+        var version = await searchCache.GetVersionAsync(cancellationToken);
+        var cacheKey = $"v{version}:catalog:new:l={clampedLimit}";
+
+        var cached = await searchCache.GetAsync<List<CatalogItemResponse>>(cacheKey, cancellationToken);
+        if (cached is not null)
+            return cached;
+
+        var rows = await (from idx in dbContext.SearchIndices.AsNoTracking()
+                          where idx.IsPublic
+                          join stats in dbContext.TestStatistics.AsNoTracking()
+                              on idx.TestUid equals stats.TestUid into statsGroup
+                          from stats in statsGroup.DefaultIfEmpty()
+                          orderby idx.UpdatedAt descending
+                          select new CatalogProjection
+                          {
+                              Index = idx,
+                              TotalAttempts = stats != null ? stats.TotalAttempts : 0,
+                              PassRate = stats != null ? stats.PassRate : 0m,
+                              AvgScore = stats != null ? stats.AvgScore : 0m
+                          })
+            .Take(clampedLimit)
+            .ToListAsync(cancellationToken);
+
+        var items = rows.Select(MapToCatalogItem).ToList();
+        await searchCache.SetAsync(cacheKey, items, CatalogCacheTtl, cancellationToken);
+        return items;
+    }
+
+    private static CatalogItemResponse MapToCatalogItem(CatalogProjection row) =>
+        new(
+            TestUid: row.Index.TestUid,
+            Title: row.Index.Title,
+            Description: row.Index.Description,
+            AuthorUid: row.Index.AuthorUid,
+            AuthorName: row.Index.AuthorName,
+            Subject: row.Index.Subject,
+            QuestionCount: row.Index.QuestionCount,
+            TotalAttempts: row.TotalAttempts,
+            PassRate: row.PassRate,
+            AvgScore: row.AvgScore,
+            UpdatedAt: new DateTimeOffset(row.Index.UpdatedAt, TimeSpan.Zero));
+
+    private static string EscapeLikePattern(string value) =>
+        value.Replace(@"\", @"\\").Replace("%", @"\%").Replace("_", @"\_");
+
+    private sealed class SearchProjection
+    {
+        public required SearchIndex Index { get; init; }
+        public int TotalAttempts { get; init; }
+        public decimal PassRate { get; init; }
+        public decimal AvgScore { get; init; }
+        public float Rank { get; init; }
+    }
+
+    private sealed class CatalogProjection
+    {
+        public required SearchIndex Index { get; init; }
+        public int TotalAttempts { get; init; }
+        public decimal PassRate { get; init; }
+        public decimal AvgScore { get; init; }
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Services\Implementations\StatisticsService.cs ===
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using SearchService.Contracts.Statistics;
+using SearchService.Domain.Entities;
+using SearchService.Infrastructure.Persistence;
+using SearchService.Services.Interfaces;
+using Shared.Contracts.Events;
+
+namespace SearchService.Services.Implementations;
+
+public class StatisticsService(
+    SearchDbContext dbContext,
+    ISearchCache searchCache,
+    ILogger<StatisticsService> logger) : IStatisticsService
+{
+    public async Task OnCompletedAsync(
+        TestCompletedEvent message,
+        CancellationToken cancellationToken = default)
+    {
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+
+        var alreadyProcessed = await dbContext.ProcessedAttempts
+            .AnyAsync(p => p.AttemptUid == message.AttemptUid, cancellationToken);
+
+        if (alreadyProcessed)
+        {
+            logger.LogInformation("Попытка {AttemptUid} уже была учтена ранее, пропуск дубликата.", message.AttemptUid);
+            await transaction.RollbackAsync(cancellationToken);
+            return;
+        }
+
+        dbContext.ProcessedAttempts.Add(new ProcessedAttempt
+        {
+            AttemptUid = message.AttemptUid,
+            ProcessedAt = DateTime.UtcNow
+        });
+
+        var stats = await dbContext.TestStatistics
+            .FirstOrDefaultAsync(s => s.TestUid == message.TestUid, cancellationToken);
+
+        var completedAtUtc = message.CompletedAt.UtcDateTime;
+
+        if (stats is null)
+        {
+            var passedAttempts = message.Passed ? 1 : 0;
+            stats = new TestStatistics
+            {
+                TestUid = message.TestUid,
+                TotalAttempts = 1,
+                PassedAttempts = passedAttempts,
+                PassRate = message.Passed ? 100.00m : 0.00m,
+                AvgScore = Math.Round(message.Percent, 2, MidpointRounding.AwayFromZero),
+                AvgDurationSec = 0,
+                LastAttemptAt = completedAtUtc
+            };
+
+            dbContext.TestStatistics.Add(stats);
+        }
+        else
+        {
+            var previousTotal = stats.TotalAttempts;
+            var newTotal = previousTotal + 1;
+            var newPassed = stats.PassedAttempts + (message.Passed ? 1 : 0);
+
+            stats.TotalAttempts = newTotal;
+            stats.PassedAttempts = newPassed;
+            stats.PassRate = Math.Round((decimal)newPassed / newTotal * 100m, 2, MidpointRounding.AwayFromZero);
+            stats.AvgScore = Math.Round(
+                (stats.AvgScore * previousTotal + message.Percent) / newTotal,
+                2,
+                MidpointRounding.AwayFromZero);
+
+            if (!stats.LastAttemptAt.HasValue || completedAtUtc > stats.LastAttemptAt.Value)
+            {
+                stats.LastAttemptAt = completedAtUtc;
+            }
+        }
+
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (DbUpdateException ex)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            logger.LogWarning(ex,
+                "Конкурентный дубликат при обработке попытки {AttemptUid} для теста {TestUid}.",
+                message.AttemptUid, message.TestUid);
+            return;
+        }
+
+        await searchCache.InvalidateAllAsync(cancellationToken);
+
+        logger.LogInformation(
+            "Статистика теста {TestUid} обновлена по попытке {AttemptUid} (всего попыток: {TotalAttempts}).",
+            message.TestUid, message.AttemptUid, stats.TotalAttempts);
+    }
+
+    public async Task<TestStatisticsResponse?> GetByTestUidAsync(
+        Guid testUid,
+        CancellationToken cancellationToken = default)
+    {
+        var stats = await dbContext.TestStatistics
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.TestUid == testUid, cancellationToken);
+
+        if (stats is null)
+            return null;
+
+        return new TestStatisticsResponse(
+            TestUid: stats.TestUid,
+            TotalAttempts: stats.TotalAttempts,
+            PassedAttempts: stats.PassedAttempts,
+            PassRate: stats.PassRate,
+            AvgScore: stats.AvgScore,
+            AvgDurationSec: stats.AvgDurationSec,
+            LastAttemptAt: stats.LastAttemptAt.HasValue
+                ? new DateTimeOffset(stats.LastAttemptAt.Value, TimeSpan.Zero)
+                : null);
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Services\Interfaces\IIndexService.cs ===
+using Shared.Contracts.Events;
+
+namespace SearchService.Services.Interfaces;
+
+public interface IIndexService
+{
+    Task OnPublishedAsync(TestPublishedEvent message, CancellationToken cancellationToken = default);
+    Task OnUnpublishedAsync(TestUnpublishedEvent message, CancellationToken cancellationToken = default);
+    Task OnUpdatedAsync(TestUpdatedEvent message, CancellationToken cancellationToken = default);
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Services\Interfaces\ISearchCache.cs ===
+namespace SearchService.Services.Interfaces;
+
+public interface ISearchCache
+{
+    Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default);
+    Task SetAsync<T>(string key, T value, TimeSpan? ttl = null, CancellationToken cancellationToken = default);
+    Task<long> GetVersionAsync(CancellationToken cancellationToken = default);
+    Task InvalidateAllAsync(CancellationToken cancellationToken = default);
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Services\Interfaces\ISearchService.cs ===
+using SearchService.Contracts.Catalog;
+using SearchService.Contracts.Common;
+using SearchService.Contracts.Search;
+
+namespace SearchService.Services.Interfaces;
+
+public interface ISearchService
+{
+    Task<PagedResponse<SearchResponse>> SearchAsync(SearchTestsRequest request, CancellationToken cancellationToken = default);
+    Task<PagedResponse<CatalogItemResponse>> GetCatalogAsync(string? category, int page, int size, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<CatalogItemResponse>> GetPopularAsync(int limit = 10, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<CatalogItemResponse>> GetNewAsync(int limit = 10, CancellationToken cancellationToken = default);
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Services\Interfaces\IStatisticsService.cs ===
+using SearchService.Contracts.Statistics;
+using Shared.Contracts.Events;
+
+namespace SearchService.Services.Interfaces;
+
+public interface IStatisticsService
+{
+    Task OnCompletedAsync(TestCompletedEvent message, CancellationToken cancellationToken = default);
+    Task<TestStatisticsResponse?> GetByTestUidAsync(Guid testUid, CancellationToken cancellationToken = default);
+}
+
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Validators\SearchTestsRequestValidator.cs ===
 using FluentValidation;
 using SearchService.Contracts.Search;
@@ -5657,6 +6311,10 @@ public class SearchTestsRequestValidator : AbstractValidator<SearchTestsRequest>
   "ConnectionStrings": {
     "DefaultConnection": "Host=localhost;Port=5432;Database=KnowledgeDb;Username=postgres;Password=CHANGE_ME"
   },
+  "Redis": {
+    "ConnectionString": "localhost:6379",
+    "InstanceName": "KnowledgeControl:Search:"
+  },
   "Logging": {
     "LogLevel": {
       "Default": "Information",
@@ -5669,7 +6327,10 @@ public class SearchTestsRequestValidator : AbstractValidator<SearchTestsRequest>
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Program.cs ===
 using FluentValidation;
 using Microsoft.EntityFrameworkCore;
+using SearchService.Infrastructure.Caching;
 using SearchService.Infrastructure.Persistence;
+using SearchService.Services.Implementations;
+using SearchService.Services.Interfaces;
 using Serilog;
 using Shared.Common.Extensions;
 
@@ -5677,6 +6338,13 @@ var builder = WebApplication.CreateBuilder(args);
 
 CommonServiceExtensions.ConfigureSerilog(builder.Configuration, "SearchService");
 builder.Host.UseSerilog();
+
+var redisConnection = builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379";
+builder.Services.AddStackExchangeRedisCache(options =>
+{
+    options.Configuration = redisConnection;
+    options.InstanceName = builder.Configuration["Redis:InstanceName"] ?? "KnowledgeControl:Search:";
+});
 
 builder.Services.AddCommonWebServices("Search Service API");
 builder.Services.AddValidatorsFromAssembly(typeof(Program).Assembly);
@@ -5687,6 +6355,11 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
 builder.Services.AddDbContext<SearchDbContext>(options =>
     options.UseNpgsql(connectionString, npgsql =>
         npgsql.MigrationsHistoryTable("__EFMigrationsHistory", "search_schema")));
+
+builder.Services.AddScoped<ISearchCache, RedisSearchCache>();
+builder.Services.AddScoped<ISearchService, SearchService.Services.Implementations.SearchService>();
+builder.Services.AddScoped<IIndexService, IndexService>();
+builder.Services.AddScoped<IStatisticsService, StatisticsService>();
 
 var app = builder.Build();
 
@@ -5717,6 +6390,7 @@ app.Run();
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.3" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
     <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />

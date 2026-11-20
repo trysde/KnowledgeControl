@@ -55,6 +55,10 @@ public class SearchDbContext : DbContext
                 .HasMaxLength(100);
             entity.HasIndex(e => e.Subject);
 
+            entity.Property(e => e.Tags)
+                .HasColumnName("tags")
+                .HasMaxLength(500);
+
             entity.Property(e => e.IsPublic)
                 .HasColumnName("is_public")
                 .HasDefaultValue(true)
@@ -67,13 +71,16 @@ public class SearchDbContext : DbContext
                 .IsRequired();
 
             entity.Property(e => e.SearchVector)
-                .HasColumnName("search_vector");
+                .HasColumnName("search_vector")
+                .HasComputedColumnSql(
+                    "setweight(to_tsvector('russian', coalesce(title, '')), 'A') || " +
+                    "setweight(to_tsvector('russian', coalesce(description, '')), 'B') || " +
+                    "setweight(to_tsvector('russian', coalesce(tags, '')), 'B') || " +
+                    "setweight(to_tsvector('russian', coalesce(subject, '')), 'C') || " +
+                    "setweight(to_tsvector('russian', coalesce(author_name, '')), 'C')",
+                    stored: true);
 
-            entity.HasGeneratedTsVectorColumn(
-                    e => e.SearchVector,
-                    "russian",
-                    e => new { e.Title, e.Description, e.Subject, e.AuthorName })
-                .HasIndex(e => e.SearchVector)
+            entity.HasIndex(e => e.SearchVector)
                 .HasMethod("GIN");
 
             entity.Property(e => e.UpdatedAt)

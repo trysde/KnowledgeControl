@@ -5353,6 +5353,75 @@ app.Run();
 </Project>
 
 
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Contracts\Catalog\CatalogItemResponse.cs ===
+namespace SearchService.Contracts.Catalog;
+
+public record CatalogItemResponse(
+    Guid TestUid,
+    string Title,
+    string? Description,
+    Guid AuthorUid,
+    string AuthorName,
+    string? Subject,
+    int QuestionCount,
+    int TotalAttempts,
+    decimal PassRate,
+    decimal AvgScore,
+    DateTimeOffset UpdatedAt);
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Contracts\Common\PagedResponse.cs ===
+namespace SearchService.Contracts.Common;
+
+public record PagedResponse<T>(
+    IReadOnlyList<T> Items,
+    int Page,
+    int PageSize,
+    int TotalCount,
+    int TotalPages);
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Contracts\Search\SearchResponse.cs ===
+namespace SearchService.Contracts.Search;
+
+public record SearchResponse(
+    Guid TestUid,
+    string Title,
+    string? Description,
+    Guid AuthorUid,
+    string AuthorName,
+    string? Subject,
+    int QuestionCount,
+    int TotalAttempts,
+    decimal PassRate,
+    decimal AvgScore,
+    float Rank,
+    DateTimeOffset UpdatedAt);
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Contracts\Search\SearchTestsRequest.cs ===
+namespace SearchService.Contracts.Search;
+
+public record SearchTestsRequest
+{
+    public string? Q { get; init; }
+    public string? Category { get; init; }
+    public string? Tag { get; init; }
+    public Guid? Author { get; init; }
+    public string Sort { get; init; } = "relevance";
+    public int Page { get; init; } = 1;
+    public int Size { get; init; } = 20;
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Contracts\Statistics\TestStatisticsResponse.cs ===
+namespace SearchService.Contracts.Statistics;
+
+public record TestStatisticsResponse(
+    Guid TestUid,
+    int TotalAttempts,
+    int PassedAttempts,
+    decimal PassRate,
+    decimal AvgScore,
+    int AvgDurationSec,
+    DateTimeOffset? LastAttemptAt);
+
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Domain\Entities\ProcessedAttempt.cs ===
 namespace SearchService.Domain.Entities;
 
@@ -5376,6 +5445,7 @@ public class SearchIndex
     public Guid AuthorUid { get; set; }
     public string AuthorName { get; set; } = string.Empty;
     public string? Subject { get; set; }
+    public string? Tags { get; set; }
     public bool IsPublic { get; set; } = true;
     public int QuestionCount { get; set; }
     public NpgsqlTsVector SearchVector { get; set; } = null!;
@@ -5544,6 +5614,44 @@ public class SearchDbContext : DbContext
     }
 }
 
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Validators\SearchTestsRequestValidator.cs ===
+using FluentValidation;
+using SearchService.Contracts.Search;
+
+namespace SearchService.Validators;
+
+public class SearchTestsRequestValidator : AbstractValidator<SearchTestsRequest>
+{
+    private static readonly string[] AllowedSortValues =
+        ["relevance", "popular", "newest", "pass_rate", "avg_score"];
+
+    public SearchTestsRequestValidator()
+    {
+        RuleFor(x => x.Q)
+            .MaximumLength(200).WithMessage("Поисковый запрос не должен превышать 200 символов.")
+            .When(x => x.Q is not null);
+
+        RuleFor(x => x.Category)
+            .MaximumLength(100).WithMessage("Название категории не должно превышать 100 символов.")
+            .When(x => x.Category is not null);
+
+        RuleFor(x => x.Tag)
+            .MaximumLength(50).WithMessage("Название тега не должно превышать 50 символов.")
+            .When(x => x.Tag is not null);
+
+        RuleFor(x => x.Sort)
+            .NotEmpty().WithMessage("Параметр сортировки не может быть пустым.")
+            .Must(s => AllowedSortValues.Contains(s, StringComparer.OrdinalIgnoreCase))
+            .WithMessage($"Допустимые значения сортировки: {string.Join(", ", AllowedSortValues)}.");
+
+        RuleFor(x => x.Page)
+            .GreaterThanOrEqualTo(1).WithMessage("Номер страницы должен быть больше или равен 1.");
+
+        RuleFor(x => x.Size)
+            .InclusiveBetween(1, 100).WithMessage("Размер страницы должен быть в диапазоне от 1 до 100.");
+    }
+}
+
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\appsettings.json ===
 {
   "ConnectionStrings": {
@@ -5559,35 +5667,35 @@ public class SearchDbContext : DbContext
 }
 
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Program.cs ===
+using FluentValidation;
 using Microsoft.EntityFrameworkCore;
 using SearchService.Infrastructure.Persistence;
+using Serilog;
 using Shared.Common.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddDbContext<SearchDbContext>(options =>
-    options.UseNpgsql(
-        builder.Configuration.GetConnectionString("DefaultConnection"),
-        npgsql => npgsql.MigrationsHistoryTable("__EFMigrationsHistory", "search_schema")));
+CommonServiceExtensions.ConfigureSerilog(builder.Configuration, "SearchService");
+builder.Host.UseSerilog();
 
-builder.Services.AddControllers();
-builder.Services.AddOpenApi();
+builder.Services.AddCommonWebServices("Search Service API");
+builder.Services.AddValidatorsFromAssembly(typeof(Program).Assembly);
+
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
+    ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is not configured.");
+
+builder.Services.AddDbContext<SearchDbContext>(options =>
+    options.UseNpgsql(connectionString, npgsql =>
+        npgsql.MigrationsHistoryTable("__EFMigrationsHistory", "search_schema")));
 
 var app = builder.Build();
 
-using (var scope = app.Services.CreateScope())
-{
-    var db = scope.ServiceProvider.GetRequiredService<SearchDbContext>();
-    await db.Database.MigrateAsync();
-}
+await app.ApplyMigrationsAsync<SearchDbContext>();
 
-if (app.Environment.IsDevelopment())
-{
-    app.MapOpenApi();
-}
+app.UseCommonMiddleware(app.Environment);
 
-app.UseGlobalExceptionHandler();
 app.UseAuthorization();
+
 app.MapControllers();
 
 app.Run();

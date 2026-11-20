@@ -81,13 +81,17 @@ namespace SearchService.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAddOrUpdate()
                         .HasColumnType("tsvector")
                         .HasColumnName("search_vector")
-                        .HasAnnotation("Npgsql:TsVectorConfig", "russian")
-                        .HasAnnotation("Npgsql:TsVectorProperties", new[] { "Title", "Description", "Subject", "AuthorName" });
+                        .HasComputedColumnSql("setweight(to_tsvector('russian', coalesce(title, '')), 'A') || setweight(to_tsvector('russian', coalesce(description, '')), 'B') || setweight(to_tsvector('russian', coalesce(tags, '')), 'B') || setweight(to_tsvector('russian', coalesce(subject, '')), 'C') || setweight(to_tsvector('russian', coalesce(author_name, '')), 'C')", true);
 
                     b.Property<string>("Subject")
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)")
                         .HasColumnName("subject");
+
+                    b.Property<string>("Tags")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("tags");
 
                     b.Property<Guid>("TestUid")
                         .HasColumnType("uuid")

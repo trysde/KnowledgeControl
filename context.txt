@@ -2911,6 +2911,137 @@ public record TestSnapshotDto(
     int PassingScore,
     IReadOnlyList<QuestionSnapshotDto> Questions);
 
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Controllers\AttemptsController.cs ===
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Shared.Common.Exceptions;
+using TestTakingService.Contracts.Attempts;
+using TestTakingService.Services.Interfaces;
+
+namespace TestTakingService.Controllers;
+
+[Route("api/attempts")]
+[Authorize]
+public class AttemptsController(IAttemptService attemptService) : BaseApiController
+{
+    [HttpPost("start")]
+    [ProducesResponseType(typeof(StartAttemptResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<StartAttemptResponse>> Start(
+        [FromQuery] Guid testUid,
+        CancellationToken cancellationToken)
+    {
+        if (testUid == Guid.Empty)
+        {
+            throw new BadRequestException("Параметр запроса 'testUid' обязателен и не может быть пустым.");
+        }
+
+        var userUid = GetCurrentUserUid();
+        var response = await attemptService.StartAsync(testUid, userUid, cancellationToken);
+        return CreatedAtAction(nameof(GetByUid), new { uid = response.AttemptUid }, response);
+    }
+
+    [HttpGet("my")]
+    [ProducesResponseType(typeof(IReadOnlyList<AttemptResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<ActionResult<IReadOnlyList<AttemptResponse>>> GetMy(CancellationToken cancellationToken)
+    {
+        var userUid = GetCurrentUserUid();
+        var response = await attemptService.GetMyAsync(userUid, cancellationToken);
+        return Ok(response);
+    }
+
+    [HttpGet("{uid:guid}")]
+    [ProducesResponseType(typeof(AttemptResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<AttemptResponse>> GetByUid(
+        [FromRoute] Guid uid,
+        CancellationToken cancellationToken)
+    {
+        var userUid = GetCurrentUserUid();
+        var response = await attemptService.GetByUidAsync(uid, userUid, cancellationToken);
+        return Ok(response);
+    }
+
+    [HttpPost("{uid:guid}/answer")]
+    [ProducesResponseType(typeof(SavedAnswerDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<SavedAnswerDto>> SubmitAnswer(
+        [FromRoute] Guid uid,
+        [FromBody] SubmitAnswerRequest request,
+        CancellationToken cancellationToken)
+    {
+        var userUid = GetCurrentUserUid();
+        var response = await attemptService.SubmitAnswerAsync(uid, userUid, request, cancellationToken);
+        return Ok(response);
+    }
+
+    [HttpPost("{uid:guid}/finish")]
+    [ProducesResponseType(typeof(AttemptResultResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<AttemptResultResponse>> Finish(
+        [FromRoute] Guid uid,
+        CancellationToken cancellationToken)
+    {
+        var userUid = GetCurrentUserUid();
+        var response = await attemptService.FinishAsync(uid, userUid, cancellationToken);
+        return Ok(response);
+    }
+
+    [HttpGet("{uid:guid}/result")]
+    [ProducesResponseType(typeof(AttemptResultResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<AttemptResultResponse>> GetResult(
+        [FromRoute] Guid uid,
+        CancellationToken cancellationToken)
+    {
+        var userUid = GetCurrentUserUid();
+        var response = await attemptService.GetResultAsync(uid, userUid, cancellationToken);
+        return Ok(response);
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Controllers\BaseApiController.cs ===
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Mvc;
+using Shared.Common.Exceptions;
+
+namespace TestTakingService.Controllers;
+
+[ApiController]
+public abstract class BaseApiController : ControllerBase
+{
+    protected Guid GetCurrentUserUid()
+    {
+        var subClaim = User.FindFirstValue(JwtRegisteredClaimNames.Sub)
+                       ?? User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (!Guid.TryParse(subClaim, out var userUid))
+        {
+            throw new UnauthorizedException("Некорректный идентификатор пользователя в токене.");
+        }
+
+        return userUid;
+    }
+}
+
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Domain\Entities\Answer.cs ===
 namespace TestTakingService.Domain.Entities;
 
@@ -3386,6 +3517,496 @@ public class TestTakingDbContext(DbContextOptions<TestTakingDbContext> options) 
     }
 }
 
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Services\Implementations\AttemptService.cs ===
+using Microsoft.EntityFrameworkCore;
+using Shared.Common.Exceptions;
+using Shared.Contracts.Events;
+using TestTakingService.Contracts.Attempts;
+using TestTakingService.Contracts.Snapshots;
+using TestTakingService.Domain.Entities;
+using TestTakingService.Domain.Enums;
+using TestTakingService.Domain.ValueObjects;
+using TestTakingService.Infrastructure.Persistence;
+using TestTakingService.Services.Interfaces;
+
+namespace TestTakingService.Services.Implementations;
+
+public class AttemptService(
+    TestTakingDbContext dbContext,
+    ITestCreationClient testCreationClient,
+    IAttemptSnapshotCache snapshotCache,
+    GradingService gradingService,
+    IMessagePublisher messagePublisher) : IAttemptService
+{
+    public async Task<StartAttemptResponse> StartAsync(
+        Guid testUid,
+        Guid userUid,
+        CancellationToken cancellationToken = default)
+    {
+        var remoteSnapshot = await testCreationClient.GetTestSnapshotAsync(testUid, cancellationToken);
+
+        if (!string.Equals(remoteSnapshot.Status, "Published", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ForbiddenException("Тест не опубликован и недоступен для прохождения.");
+        }
+
+        var nowOffset = DateTimeOffset.UtcNow;
+        var nowUtc = nowOffset.UtcDateTime;
+
+        if (remoteSnapshot.StartsAt.HasValue && nowOffset < remoteSnapshot.StartsAt.Value)
+        {
+            throw new ForbiddenException("Время прохождения теста ещё не началось.");
+        }
+
+        if (remoteSnapshot.EndsAt.HasValue && nowOffset > remoteSnapshot.EndsAt.Value)
+        {
+            throw new ForbiddenException("Время прохождения теста уже истекло.");
+        }
+
+        if (remoteSnapshot.MaxAttempts.HasValue)
+        {
+            var usedAttemptsCount = await dbContext.Attempts
+                .CountAsync(a => a.UserUid == userUid && a.TestUid == testUid, cancellationToken);
+
+            if (usedAttemptsCount >= remoteSnapshot.MaxAttempts.Value)
+            {
+                throw new ConflictException($"Исчерпан лимит попыток ({remoteSnapshot.MaxAttempts.Value}) для данного теста.");
+            }
+        }
+
+        var internalSnapshot = MapToInternalSnapshot(remoteSnapshot);
+        DateTime? expiresAtUtc = remoteSnapshot.TimeLimitSeconds is > 0
+            ? nowUtc.AddSeconds(remoteSnapshot.TimeLimitSeconds.Value)
+            : null;
+
+        var attempt = new Attempt
+        {
+            Uid = Guid.NewGuid(),
+            TestUid = remoteSnapshot.TestUid,
+            UserUid = userUid,
+            Status = AttemptStatus.InProgress,
+            Snapshot = internalSnapshot,
+            SnapshotVersion = 1,
+            StartedAt = nowUtc,
+            ExpiresAt = expiresAtUtc,
+            CreatedAt = nowUtc,
+            UpdatedAt = nowUtc
+        };
+
+        dbContext.Attempts.Add(attempt);
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        await snapshotCache.SetAsync(
+            attempt.Uid,
+            internalSnapshot,
+            remoteSnapshot.TimeLimitSeconds,
+            cancellationToken);
+
+        return new StartAttemptResponse(
+            AttemptUid: attempt.Uid,
+            TestUid: attempt.TestUid,
+            Status: attempt.Status.ToString(),
+            StartedAt: new DateTimeOffset(attempt.StartedAt, TimeSpan.Zero),
+            ExpiresAt: attempt.ExpiresAt.HasValue
+                ? new DateTimeOffset(attempt.ExpiresAt.Value, TimeSpan.Zero)
+                : null,
+            TestSnapshot: MapToClientSnapshot(internalSnapshot));
+    }
+
+    public async Task<IReadOnlyList<AttemptResponse>> GetMyAsync(
+        Guid userUid,
+        CancellationToken cancellationToken = default)
+    {
+        var attempts = await dbContext.Attempts
+            .Include(a => a.Answers)
+            .Where(a => a.UserUid == userUid)
+            .OrderByDescending(a => a.StartedAt)
+            .ToListAsync(cancellationToken);
+
+        var nowUtc = DateTime.UtcNow;
+        var hasExpiredUpdates = false;
+
+        foreach (var attempt in attempts)
+        {
+            if (TryMarkExpired(attempt, nowUtc))
+                hasExpiredUpdates = true;
+        }
+
+        if (hasExpiredUpdates)
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        return attempts.Select(MapToAttemptResponse).ToList();
+    }
+
+    public async Task<AttemptResponse> GetByUidAsync(
+        Guid attemptUid,
+        Guid userUid,
+        CancellationToken cancellationToken = default)
+    {
+        var attempt = await dbContext.Attempts
+            .Include(a => a.Answers)
+            .FirstOrDefaultAsync(a => a.Uid == attemptUid, cancellationToken)
+            ?? throw new NotFoundException($"Попытка с Uid {attemptUid} не найдена.");
+
+        if (attempt.UserUid != userUid)
+        {
+            throw new ForbiddenException("Нет доступа к данной попытке.");
+        }
+
+        if (TryMarkExpired(attempt, DateTime.UtcNow))
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await snapshotCache.RemoveAsync(attempt.Uid, cancellationToken);
+        }
+
+        return MapToAttemptResponse(attempt);
+    }
+
+    public async Task<SavedAnswerDto> SubmitAnswerAsync(
+        Guid attemptUid,
+        Guid userUid,
+        SubmitAnswerRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var attempt = await dbContext.Attempts
+            .Include(a => a.Answers)
+            .FirstOrDefaultAsync(a => a.Uid == attemptUid, cancellationToken)
+            ?? throw new NotFoundException($"Попытка с Uid {attemptUid} не найдена.");
+
+        if (attempt.UserUid != userUid)
+        {
+            throw new ForbiddenException("Нет доступа к данной попытке.");
+        }
+
+        var nowUtc = DateTime.UtcNow;
+
+        if (TryMarkExpired(attempt, nowUtc))
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await snapshotCache.RemoveAsync(attempt.Uid, cancellationToken);
+            throw new BadRequestException("Время на прохождение попытки истекло.");
+        }
+
+        if (attempt.Status != AttemptStatus.InProgress)
+        {
+            throw new BadRequestException("Нельзя отправлять ответы в завершённую или просроченную попытку.");
+        }
+
+        var snapshot = await snapshotCache.GetAsync(attempt.Uid, cancellationToken) ?? attempt.Snapshot;
+        var question = snapshot.Questions.FirstOrDefault(q => q.QuestionUid == request.QuestionUid)
+            ?? throw new NotFoundException($"Вопрос с Uid {request.QuestionUid} не найден в данной попытке.");
+
+        ValidateAnswerAgainstQuestion(question, request);
+
+        var selectedOptionUids = request.SelectedOptionUids.Distinct().ToList();
+        var trimmedTextAnswer = string.IsNullOrWhiteSpace(request.TextAnswer)
+            ? null
+            : request.TextAnswer.Trim();
+
+        // Upsert по (attempt_id, question_uid)
+        var existingAnswer = attempt.Answers.FirstOrDefault(a => a.QuestionUid == request.QuestionUid);
+
+        if (existingAnswer is null)
+        {
+            existingAnswer = new Answer
+            {
+                AttemptId = attempt.Id,
+                QuestionUid = request.QuestionUid,
+                SelectedOptionUids = selectedOptionUids,
+                TextAnswer = trimmedTextAnswer,
+                AnsweredAt = nowUtc
+            };
+            dbContext.Answers.Add(existingAnswer);
+        }
+        else
+        {
+            existingAnswer.SelectedOptionUids = selectedOptionUids;
+            existingAnswer.TextAnswer = trimmedTextAnswer;
+            existingAnswer.AnsweredAt = nowUtc;
+        }
+
+        attempt.UpdatedAt = nowUtc;
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        return new SavedAnswerDto(
+            QuestionUid: existingAnswer.QuestionUid,
+            SelectedOptionUids: existingAnswer.SelectedOptionUids,
+            TextAnswer: existingAnswer.TextAnswer,
+            AnsweredAt: new DateTimeOffset(existingAnswer.AnsweredAt, TimeSpan.Zero));
+    }
+
+    public async Task<AttemptResultResponse> FinishAsync(
+        Guid attemptUid,
+        Guid userUid,
+        CancellationToken cancellationToken = default)
+    {
+        var attempt = await dbContext.Attempts
+            .Include(a => a.Answers)
+            .Include(a => a.Result)
+            .FirstOrDefaultAsync(a => a.Uid == attemptUid, cancellationToken)
+            ?? throw new NotFoundException($"Попытка с Uid {attemptUid} не найдена.");
+
+        if (attempt.UserUid != userUid)
+        {
+            throw new ForbiddenException("Нет доступа к данной попытке.");
+        }
+
+        if (attempt.Status == AttemptStatus.Completed || attempt.Result is not null)
+        {
+            throw new ConflictException("Попытка уже завершена.");
+        }
+
+        if (attempt.Status == AttemptStatus.Expired)
+        {
+            throw new BadRequestException("Нельзя завершить просроченную попытку.");
+        }
+
+        // Сначала пробуем получить снапшот из Redis, при промахе — берём из БД
+        var snapshot = await snapshotCache.GetAsync(attempt.Uid, cancellationToken) ?? attempt.Snapshot;
+        var outcome = gradingService.Grade(snapshot, attempt.Answers.ToList());
+
+        var gradedByQuestion = outcome.Items.ToDictionary(i => i.QuestionUid);
+        foreach (var answer in attempt.Answers)
+        {
+            if (gradedByQuestion.TryGetValue(answer.QuestionUid, out var graded))
+            {
+                answer.IsCorrect = graded.IsCorrect;
+                answer.PointsEarned = graded.PointsEarned;
+            }
+        }
+
+        var nowUtc = DateTime.UtcNow;
+
+        var result = new Result
+        {
+            Uid = Guid.NewGuid(),
+            AttemptId = attempt.Id,
+            TestUid = attempt.TestUid,
+            UserUid = attempt.UserUid,
+            TotalScore = outcome.TotalScore,
+            MaxScore = outcome.MaxScore,
+            Percentage = outcome.Percentage,
+            Passed = outcome.Passed,
+            CalculatedAt = nowUtc
+        };
+
+        attempt.Status = AttemptStatus.Completed;
+        attempt.FinishedAt = nowUtc;
+        attempt.UpdatedAt = nowUtc;
+        attempt.Result = result;
+
+        dbContext.Results.Add(result);
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        var completedAtOffset = new DateTimeOffset(nowUtc, TimeSpan.Zero);
+
+        await messagePublisher.PublishAsync(new TestCompletedEvent
+        {
+            TestUid = attempt.TestUid,
+            UserUid = attempt.UserUid,
+            AttemptUid = attempt.Uid,
+            Score = outcome.TotalScore,
+            MaxScore = outcome.MaxScore,
+            Percent = outcome.Percentage,
+            Passed = outcome.Passed,
+            CompletedAt = completedAtOffset
+        }, cancellationToken);
+
+        await snapshotCache.RemoveAsync(attempt.Uid, cancellationToken);
+
+        return new AttemptResultResponse(
+            ResultUid: result.Uid,
+            AttemptUid: attempt.Uid,
+            TestUid: attempt.TestUid,
+            UserUid: attempt.UserUid,
+            Score: result.TotalScore,
+            MaxScore: result.MaxScore,
+            Percent: result.Percentage,
+            PassingScore: snapshot.PassingScore,
+            Passed: result.Passed,
+            CompletedAt: completedAtOffset,
+            QuestionResults: outcome.Items.Select(i => i.ResultDto).ToList());
+    }
+
+    public async Task<AttemptResultResponse> GetResultAsync(
+        Guid attemptUid,
+        Guid userUid,
+        CancellationToken cancellationToken = default)
+    {
+        var attempt = await dbContext.Attempts
+            .AsNoTracking()
+            .Include(a => a.Answers)
+            .Include(a => a.Result)
+            .FirstOrDefaultAsync(a => a.Uid == attemptUid, cancellationToken)
+            ?? throw new NotFoundException($"Попытка с Uid {attemptUid} не найдена.");
+
+        if (attempt.UserUid != userUid)
+        {
+            throw new ForbiddenException("Нет доступа к результатам данной попытки.");
+        }
+
+        if (attempt.Result is null)
+        {
+            throw new BadRequestException("Попытка ещё не завершена, результат недоступен.");
+        }
+
+        var outcome = gradingService.Grade(attempt.Snapshot, attempt.Answers.ToList());
+
+        return new AttemptResultResponse(
+            ResultUid: attempt.Result.Uid,
+            AttemptUid: attempt.Uid,
+            TestUid: attempt.TestUid,
+            UserUid: attempt.UserUid,
+            Score: attempt.Result.TotalScore,
+            MaxScore: attempt.Result.MaxScore,
+            Percent: attempt.Result.Percentage,
+            PassingScore: attempt.Snapshot.PassingScore,
+            Passed: attempt.Result.Passed,
+            CompletedAt: new DateTimeOffset(attempt.Result.CalculatedAt, TimeSpan.Zero),
+            QuestionResults: outcome.Items.Select(i => i.ResultDto).ToList());
+    }
+
+    private static bool TryMarkExpired(Attempt attempt, DateTime nowUtc)
+    {
+        if (attempt.Status == AttemptStatus.InProgress
+            && attempt.ExpiresAt.HasValue
+            && nowUtc > attempt.ExpiresAt.Value)
+        {
+            attempt.Status = AttemptStatus.Expired;
+            attempt.UpdatedAt = nowUtc;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static void ValidateAnswerAgainstQuestion(AttemptQuestionSnapshot question, SubmitAnswerRequest request)
+    {
+        if (string.Equals(question.QuestionType, "TextInput", StringComparison.OrdinalIgnoreCase))
+        {
+            if (request.SelectedOptionUids.Count > 0 || string.IsNullOrWhiteSpace(request.TextAnswer))
+            {
+                throw new BadRequestException("Для данного вопроса требуется текстовый ответ.");
+            }
+
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.TextAnswer) || request.SelectedOptionUids.Count == 0)
+        {
+            throw new BadRequestException("Для данного вопроса необходимо выбрать вариант ответа из списка.");
+        }
+
+        if (string.Equals(question.QuestionType, "SingleChoice", StringComparison.OrdinalIgnoreCase)
+            && request.SelectedOptionUids.Count != 1)
+        {
+            throw new BadRequestException("Для вопроса с одиночным выбором можно выбрать только 1 вариант ответа.");
+        }
+
+        var validOptionUids = question.Options.Select(o => o.Uid).ToHashSet();
+        var invalidOptions = request.SelectedOptionUids.Where(id => !validOptionUids.Contains(id)).ToList();
+
+        if (invalidOptions.Count > 0)
+        {
+            throw new BadRequestException("Указаны варианты ответа, не относящиеся к данному вопросу.");
+        }
+    }
+
+    private static AttemptSnapshot MapToInternalSnapshot(TestGradingSnapshot source)
+    {
+        return new AttemptSnapshot
+        {
+            TestUid = source.TestUid,
+            AuthorUid = source.AuthorUid,
+            Title = source.Title,
+            Description = source.Description,
+            TimeLimitSeconds = source.TimeLimitSeconds,
+            MaxAttempts = source.MaxAttempts,
+            PassingScore = source.PassingScore,
+            StartsAt = source.StartsAt,
+            EndsAt = source.EndsAt,
+            Questions = source.Questions
+                .OrderBy(q => q.OrderIndex)
+                .Select(q => new AttemptQuestionSnapshot
+                {
+                    QuestionUid = q.QuestionUid,
+                    Title = q.Title,
+                    Text = q.Text,
+                    QuestionType = q.QuestionType,
+                    OrderIndex = q.OrderIndex,
+                    Points = q.Points,
+                    CorrectTextAnswer = q.CorrectTextAnswer,
+                    Options = q.Options
+                        .OrderBy(o => o.Position)
+                        .Select(o => new AttemptOptionSnapshot
+                        {
+                            Uid = o.Uid,
+                            Text = o.Text,
+                            IsCorrect = o.IsCorrect,
+                            Position = o.Position
+                        })
+                        .ToList()
+                })
+                .ToList()
+        };
+    }
+
+    private static TestSnapshotDto MapToClientSnapshot(AttemptSnapshot snapshot)
+    {
+        var questions = snapshot.Questions
+            .OrderBy(q => q.OrderIndex)
+            .Select(q => new QuestionSnapshotDto(
+                QuestionUid: q.QuestionUid,
+                Title: q.Title,
+                Text: q.Text,
+                QuestionType: q.QuestionType,
+                OrderIndex: q.OrderIndex,
+                Points: q.Points,
+                Options: q.Options
+                    .OrderBy(o => o.Position)
+                    .Select(o => new AnswerOptionSnapshotDto(o.Uid, o.Text, o.Position))
+                    .ToList()))
+            .ToList();
+
+        return new TestSnapshotDto(
+            TestUid: snapshot.TestUid,
+            Title: snapshot.Title,
+            Description: snapshot.Description,
+            TimeLimitSeconds: snapshot.TimeLimitSeconds,
+            PassingScore: snapshot.PassingScore,
+            Questions: questions);
+    }
+
+    private static AttemptResponse MapToAttemptResponse(Attempt attempt)
+    {
+        var savedAnswers = attempt.Answers
+            .OrderBy(a => a.AnsweredAt)
+            .Select(a => new SavedAnswerDto(
+                QuestionUid: a.QuestionUid,
+                SelectedOptionUids: a.SelectedOptionUids,
+                TextAnswer: a.TextAnswer,
+                AnsweredAt: new DateTimeOffset(a.AnsweredAt, TimeSpan.Zero)))
+            .ToList();
+
+        return new AttemptResponse(
+            AttemptUid: attempt.Uid,
+            TestUid: attempt.TestUid,
+            UserUid: attempt.UserUid,
+            Status: attempt.Status.ToString(),
+            StartedAt: new DateTimeOffset(attempt.StartedAt, TimeSpan.Zero),
+            FinishedAt: attempt.FinishedAt.HasValue
+                ? new DateTimeOffset(attempt.FinishedAt.Value, TimeSpan.Zero)
+                : null,
+            ExpiresAt: attempt.ExpiresAt.HasValue
+                ? new DateTimeOffset(attempt.ExpiresAt.Value, TimeSpan.Zero)
+                : null,
+            TestSnapshot: MapToClientSnapshot(attempt.Snapshot),
+            Answers: savedAnswers);
+    }
+}
+
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Services\Implementations\GradingService.cs ===
 using TestTakingService.Contracts.Attempts;
 using TestTakingService.Domain.Entities;
@@ -3499,6 +4120,21 @@ public class GradingService
     }
 }
 
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Services\Interfaces\IAttemptService.cs ===
+using TestTakingService.Contracts.Attempts;
+
+namespace TestTakingService.Services.Interfaces;
+
+public interface IAttemptService
+{
+    Task<StartAttemptResponse> StartAsync(Guid testUid, Guid userUid, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<AttemptResponse>> GetMyAsync(Guid userUid, CancellationToken cancellationToken = default);
+    Task<AttemptResponse> GetByUidAsync(Guid attemptUid, Guid userUid, CancellationToken cancellationToken = default);
+    Task<SavedAnswerDto> SubmitAnswerAsync(Guid attemptUid, Guid userUid, SubmitAnswerRequest request, CancellationToken cancellationToken = default);
+    Task<AttemptResultResponse> FinishAsync(Guid attemptUid, Guid userUid, CancellationToken cancellationToken = default);
+    Task<AttemptResultResponse> GetResultAsync(Guid attemptUid, Guid userUid, CancellationToken cancellationToken = default);
+}
+
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Services\Interfaces\IAttemptSnapshotCache.cs ===
 using TestTakingService.Domain.ValueObjects;
 
@@ -3598,9 +4234,12 @@ public class SubmitAnswerRequestValidator : AbstractValidator<SubmitAnswerReques
 }
 
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\Program.cs ===
+using System.Text;
 using FluentValidation;
 using MassTransit;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using Serilog;
 using Shared.Common.Extensions;
 using TestTakingService.Infrastructure.Caching;
@@ -3609,6 +4248,7 @@ using TestTakingService.Infrastructure.Messaging;
 using TestTakingService.Infrastructure.Persistence;
 using TestTakingService.Services.Implementations;
 using TestTakingService.Services.Interfaces;
+using UserService.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -3624,6 +4264,32 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
 builder.Services.AddDbContext<TestTakingDbContext>(options =>
     options.UseNpgsql(connectionString, npgsql =>
         npgsql.MigrationsHistoryTable("__EFMigrationsHistory", TestTakingDbContext.SchemaName)));
+
+var jwtSection = builder.Configuration.GetSection(JwtOptions.SectionName);
+builder.Services.Configure<JwtOptions>(jwtSection);
+
+var jwtOptions = jwtSection.Get<JwtOptions>()
+    ?? throw new InvalidOperationException("JWT configuration section is missing.");
+
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.MapInboundClaims = false;
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = jwtOptions.Issuer,
+            ValidateAudience = true,
+            ValidAudience = jwtOptions.Audience,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.SecretKey)),
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.Zero
+        };
+    });
+
+builder.Services.AddAuthorization();
 
 // Redis РєСЌС€ СЃРЅР°РїС€РѕС‚РѕРІ РїРѕРїС‹С‚РѕРє
 var redisConnection = builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379";
@@ -3668,13 +4334,17 @@ builder.Services.AddMassTransit(x =>
 builder.Services.AddScoped<IAttemptSnapshotCache, RedisAttemptSnapshotCache>();
 builder.Services.AddScoped<IMessagePublisher, RabbitMqMessagePublisher>();
 builder.Services.AddSingleton<GradingService>();
+builder.Services.AddScoped<IAttemptService, AttemptService>();
 
 var app = builder.Build();
 
 await app.ApplyMigrationsAsync<TestTakingDbContext>();
 
 app.UseCommonMiddleware(app.Environment);
+
+app.UseAuthentication();
 app.UseAuthorization();
+
 app.MapControllers();
 
 app.Run();
@@ -3691,6 +4361,7 @@ app.Run();
   <ItemGroup>
     <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.2.0" />
     <PackageReference Include="MassTransit.RabbitMQ" Version="8.4.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.3" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="11.0.0" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.3">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
@@ -4682,6 +5353,197 @@ app.Run();
 </Project>
 
 
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Domain\Entities\ProcessedAttempt.cs ===
+namespace SearchService.Domain.Entities;
+
+public class ProcessedAttempt
+{
+    public Guid AttemptUid { get; set; }
+    public DateTime ProcessedAt { get; set; } = DateTime.UtcNow;
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Domain\Entities\SearchIndex.cs ===
+using NpgsqlTypes;
+
+namespace SearchService.Domain.Entities;
+
+public class SearchIndex
+{
+    public int Id { get; set; }
+    public Guid TestUid { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public Guid AuthorUid { get; set; }
+    public string AuthorName { get; set; } = string.Empty;
+    public string? Subject { get; set; }
+    public bool IsPublic { get; set; } = true;
+    public int QuestionCount { get; set; }
+    public NpgsqlTsVector SearchVector { get; set; } = null!;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Domain\Entities\TestStatistics.cs ===
+namespace SearchService.Domain.Entities;
+
+public class TestStatistics
+{
+    public int Id { get; set; }
+    public Guid TestUid { get; set; }
+    public int TotalAttempts { get; set; }
+    public int PassedAttempts { get; set; }
+    public decimal PassRate { get; set; }
+    public decimal AvgScore { get; set; }
+    public int AvgDurationSec { get; set; }
+    public DateTime? LastAttemptAt { get; set; }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Infrastructure\Persistence\SearchDbContext.cs ===
+using Microsoft.EntityFrameworkCore;
+using SearchService.Domain.Entities;
+
+namespace SearchService.Infrastructure.Persistence;
+
+public class SearchDbContext : DbContext
+{
+    public SearchDbContext(DbContextOptions<SearchDbContext> options) : base(options)
+    {
+    }
+
+    public DbSet<SearchIndex> SearchIndices => Set<SearchIndex>();
+    public DbSet<TestStatistics> TestStatistics => Set<TestStatistics>();
+    public DbSet<ProcessedAttempt> ProcessedAttempts => Set<ProcessedAttempt>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+
+        modelBuilder.HasDefaultSchema("search_schema");
+
+        // 1. search_index
+        modelBuilder.Entity<SearchIndex>(entity =>
+        {
+            entity.ToTable("search_index");
+
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).HasColumnName("id");
+
+            entity.Property(e => e.TestUid)
+                .HasColumnName("test_uid")
+                .IsRequired();
+            entity.HasIndex(e => e.TestUid).IsUnique();
+
+            entity.Property(e => e.Title)
+                .HasColumnName("title")
+                .HasMaxLength(255)
+                .IsRequired();
+
+            entity.Property(e => e.Description)
+                .HasColumnName("description");
+
+            entity.Property(e => e.AuthorUid)
+                .HasColumnName("author_uid")
+                .IsRequired();
+            entity.HasIndex(e => e.AuthorUid);
+
+            entity.Property(e => e.AuthorName)
+                .HasColumnName("author_name")
+                .HasMaxLength(255)
+                .IsRequired();
+
+            entity.Property(e => e.Subject)
+                .HasColumnName("subject")
+                .HasMaxLength(100);
+            entity.HasIndex(e => e.Subject);
+
+            entity.Property(e => e.IsPublic)
+                .HasColumnName("is_public")
+                .HasDefaultValue(true)
+                .IsRequired();
+            entity.HasIndex(e => e.IsPublic);
+
+            entity.Property(e => e.QuestionCount)
+                .HasColumnName("question_count")
+                .HasDefaultValue(0)
+                .IsRequired();
+
+            entity.Property(e => e.SearchVector)
+                .HasColumnName("search_vector");
+
+            entity.HasGeneratedTsVectorColumn(
+                    e => e.SearchVector,
+                    "russian",
+                    e => new { e.Title, e.Description, e.Subject, e.AuthorName })
+                .HasIndex(e => e.SearchVector)
+                .HasMethod("GIN");
+
+            entity.Property(e => e.UpdatedAt)
+                .HasColumnName("updated_at")
+                .HasDefaultValueSql("NOW()")
+                .IsRequired();
+        });
+
+        // 2. test_statistics
+        modelBuilder.Entity<TestStatistics>(entity =>
+        {
+            entity.ToTable("test_statistics");
+
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).HasColumnName("id");
+
+            entity.Property(e => e.TestUid)
+                .HasColumnName("test_uid")
+                .IsRequired();
+            entity.HasIndex(e => e.TestUid).IsUnique();
+
+            entity.Property(e => e.TotalAttempts)
+                .HasColumnName("total_attempts")
+                .HasDefaultValue(0)
+                .IsRequired();
+
+            entity.Property(e => e.PassedAttempts)
+                .HasColumnName("passed_attempts")
+                .HasDefaultValue(0)
+                .IsRequired();
+
+            entity.Property(e => e.PassRate)
+                .HasColumnName("pass_rate")
+                .HasColumnType("numeric(5,2)")
+                .HasDefaultValue(0.00m)
+                .IsRequired();
+
+            entity.Property(e => e.AvgScore)
+                .HasColumnName("avg_score")
+                .HasColumnType("numeric(5,2)")
+                .HasDefaultValue(0.00m)
+                .IsRequired();
+
+            entity.Property(e => e.AvgDurationSec)
+                .HasColumnName("avg_duration_sec")
+                .HasDefaultValue(0)
+                .IsRequired();
+
+            entity.Property(e => e.LastAttemptAt)
+                .HasColumnName("last_attempt_at");
+        });
+
+        // 3. processed_attempts
+        modelBuilder.Entity<ProcessedAttempt>(entity =>
+        {
+            entity.ToTable("processed_attempts");
+
+            entity.HasKey(e => e.AttemptUid);
+            entity.Property(e => e.AttemptUid)
+                .HasColumnName("attempt_uid")
+                .ValueGeneratedNever();
+
+            entity.Property(e => e.ProcessedAt)
+                .HasColumnName("processed_at")
+                .HasDefaultValueSql("NOW()")
+                .IsRequired();
+        });
+    }
+}
+
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\appsettings.json ===
 {
   "ConnectionStrings": {
@@ -4697,22 +5559,34 @@ app.Run();
 }
 
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Program.cs ===
-using FluentValidation;
-using Serilog;
+using Microsoft.EntityFrameworkCore;
+using SearchService.Infrastructure.Persistence;
 using Shared.Common.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 
-CommonServiceExtensions.ConfigureSerilog(builder.Configuration, "SearchService");
-builder.Host.UseSerilog();
+builder.Services.AddDbContext<SearchDbContext>(options =>
+    options.UseNpgsql(
+        builder.Configuration.GetConnectionString("DefaultConnection"),
+        npgsql => npgsql.MigrationsHistoryTable("__EFMigrationsHistory", "search_schema")));
 
-builder.Services.AddCommonWebServices("Search Service API");
-builder.Services.AddValidatorsFromAssembly(typeof(Program).Assembly);
+builder.Services.AddControllers();
+builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
-app.UseCommonMiddleware(app.Environment);
-app.UseHttpsRedirection();
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<SearchDbContext>();
+    await db.Database.MigrateAsync();
+}
+
+if (app.Environment.IsDevelopment())
+{
+    app.MapOpenApi();
+}
+
+app.UseGlobalExceptionHandler();
 app.UseAuthorization();
 app.MapControllers();
 

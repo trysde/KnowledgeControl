@@ -7,23 +7,48 @@
 </head>
 <body>
   <header id="navbar" class="topbar"></header>
-  <main class="container" style="max-width:720px;">
+  <main class="container" style="max-width:760px;">
     <div class="page-header">
       <div>
         <h1 id="test-title">Результат тестирования</h1>
-        <p class="page-subtitle" id="attempt-meta"></p>
+        <p class="page-subtitle" id="attempt-meta">Загрузка...</p>
       </div>
-      <a href="index.html" class="btn">В каталог</a>
+      <div class="row-actions">
+        <a href="profile.html" class="btn">В профиль</a>
+        <a href="index.html" class="btn">В каталог</a>
+      </div>
     </div>
 
     <div id="alert" class="alert"></div>
-    <div class="card">
-      <div class="muted">Набранный балл</div>
-      <div id="score-box" class="mono" style="font-size:32px;font-weight:700;margin:6px 0;">—</div>
-      <div id="percent-box" class="muted"></div>
+
+    <div class="card" style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;">
+      <div>
+        <div class="muted">Набранный балл</div>
+        <div id="score-box" class="mono" style="font-size:32px;font-weight:700;margin:4px 0;">—</div>
+        <div id="percent-box" class="muted"></div>
+      </div>
+      <div id="verdict-badge"></div>
     </div>
 
+    <h2 style="font-size:17px;margin:22px 0 12px;">Разбор вопросов</h2>
     <div id="details-list"></div>
+
+    <div class="card" style="margin-top:24px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <strong>Обнаружили ошибку или некорректное содержание?</strong>
+          <div class="muted">Вы можете отправить жалобу на этот тест модераторам</div>
+        </div>
+        <button type="button" class="btn btn-sm btn-danger" onclick="toggleReportForm()">Пожаловаться на тест</button>
+      </div>
+      <form id="report-form" style="display:none;margin-top:14px;padding-top:14px;border-top:1px solid var(--border);">
+        <div class="form-group">
+          <label for="report-reason">Причина жалобы (от 5 до 1000 символов)</label>
+          <textarea id="report-reason" minlength="5" maxlength="1000" placeholder="Опишите проблему с тестом или вопросами..." required></textarea>
+        </div>
+        <button type="submit" id="report-submit" class="btn btn-sm btn-danger">Отправить жалобу</button>
+      </form>
+    </div>
   </main>
 
   <script src="js/api.js"></script>
@@ -31,31 +56,112 @@
   <script>
     requireAuth();
     renderNavbar();
-    const attemptId = new URLSearchParams(window.location.search).get('attemptId');
+
+    const attemptUid = new URLSearchParams(window.location.search).get('attemptUid');
+    let currentTestUid = null;
+
+    function toggleReportForm() {
+      const form = document.getElementById('report-form');
+      form.style.display = form.style.display === 'none' ? 'block' : 'none';
+    }
 
     async function loadResult() {
-      if (!attemptId) return showAlert('alert', 'Не указан attemptId.');
-      try {
-        const res = await apiRequest('taking', `/api/attempts/${attemptId}`);
-        document.getElementById('test-title').textContent = res.testTitle || 'Результат тестирования';
-        document.getElementById('score-box').textContent = `${res.score ?? 0} / ${res.maxScore ?? 0}`;
-        const pct = res.maxScore ? Math.round((res.score / res.maxScore) * 100) : 0;
-        document.getElementById('percent-box').textContent = `Выполнено: ${pct}%`;
+      if (!attemptUid) {
+        showAlert('alert', 'Не указан attemptUid в адресной строке.');
+        return;
+      }
 
-        if (Array.isArray(res.answers)) {
-          document.getElementById('details-list').innerHTML = res.answers.map((a, i) => `
-            <div class="card" style="display:flex;justify-content:space-between;align-items:center;">
-              <span>Вопрос #${i + 1}</span>
-              <span class="badge ${a.isCorrect ? 'badge-success' : 'badge-danger'}">
-                ${a.isCorrect ? 'Верно' : 'Неверно'} (${a.earnedPoints ?? 0} б.)
-              </span>
-            </div>
-          `).join('');
+      try {
+        const [res, attempt] = await Promise.all([
+          apiRequest('taking', `/api/attempts/${attemptUid}/result`),
+          apiRequest('taking', `/api/attempts/${attemptUid}`).catch(() => null)
+        ]);
+
+        currentTestUid = res.testUid;
+        const snapshot = attempt?.testSnapshot;
+
+        if (snapshot?.title) {
+          document.getElementById('test-title').textContent = `Результат: ${snapshot.title}`;
         }
+
+        const completedDate = res.completedAt ? new Date(res.completedAt).toLocaleString('ru-RU') : '';
+        document.getElementById('attempt-meta').textContent =
+          `Порог прохождения: ${res.passingScore}% · Завершено: ${completedDate}`;
+
+        document.getElementById('score-box').textContent = `${res.score} / ${res.maxScore}`;
+        document.getElementById('percent-box').textContent = `Результат: ${res.percent}% (минимум ${res.passingScore}%)`;
+
+        document.getElementById('verdict-badge').innerHTML = res.passed
+          ? '<span class="badge badge-success" style="font-size:14px;padding:6px 12px;">Тест пройден</span>'
+          : '<span class="badge badge-danger" style="font-size:14px;padding:6px 12px;">Не пройдено</span>';
+
+        const snapshotQuestionsMap = new Map();
+        (snapshot?.questions || []).forEach(q => snapshotQuestionsMap.set(q.questionUid, q));
+
+        const items = res.questionResults || [];
+        document.getElementById('details-list').innerHTML = items.map((qr, idx) => {
+          const sq = snapshotQuestionsMap.get(qr.questionUid);
+          let userAnswerHtml = '<span class="muted">Ответ не дан</span>';
+
+          if (qr.questionType === 'TextInput') {
+            if (qr.textAnswer) {
+              userAnswerHtml = `Ваш ответ: <strong>${escapeHtml(qr.textAnswer)}</strong>`;
+            }
+          } else if (Array.isArray(qr.selectedOptionUids) && qr.selectedOptionUids.length) {
+            if (sq?.options) {
+              const optMap = new Map(sq.options.map(o => [o.uid, o.text]));
+              const chosenTexts = qr.selectedOptionUids.map(id => optMap.get(id) || id);
+              userAnswerHtml = `Выбрано: <strong>${chosenTexts.map(escapeHtml).join(', ')}</strong>`;
+            } else {
+              userAnswerHtml = `Выбрано вариантов: <strong>${qr.selectedOptionUids.length}</strong>`;
+            }
+          }
+
+          return `
+            <div class="card">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:6px;">
+                <strong>Вопрос ${idx + 1}: ${escapeHtml(qr.title)}</strong>
+                <span class="badge ${qr.isCorrect ? 'badge-success' : 'badge-danger'}">
+                  ${qr.isCorrect ? 'Верно' : 'Неверно'} (${qr.pointsEarned} / ${qr.maxPoints} б.)
+                </span>
+              </div>
+              ${sq?.text ? `<div class="muted" style="margin-bottom:6px;">${escapeHtml(sq.text)}</div>` : ''}
+              <div style="font-size:13px;">${userAnswerHtml}</div>
+            </div>
+          `;
+        }).join('');
       } catch (err) {
         showAlert('alert', err.message);
       }
     }
+
+    document.getElementById('report-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!currentTestUid) return;
+      hideAlert('alert');
+
+      const btn = document.getElementById('report-submit');
+      btn.disabled = true;
+
+      try {
+        await apiRequest('creation', '/api/moderation/report', {
+          method: 'POST',
+          body: {
+            targetType: 'Test',
+            targetUid: currentTestUid,
+            reason: document.getElementById('report-reason').value.trim()
+          }
+        });
+        document.getElementById('report-form').reset();
+        document.getElementById('report-form').style.display = 'none';
+        showAlert('alert', 'Жалоба отправлена модераторам.', 'success');
+      } catch (err) {
+        showAlert('alert', err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
     loadResult();
   </script>
 </body>

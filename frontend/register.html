@@ -18,18 +18,18 @@
     <div id="alert" class="alert"></div>
     <form id="register-form" class="card">
       <div class="form-group">
-        <label for="fullName">Имя и фамилия</label>
-        <input type="text" id="fullName" required>
+        <label for="nickname">Никнейм (от 3 до 64 символов)</label>
+        <input type="text" id="nickname" minlength="3" maxlength="64" required autocomplete="username">
       </div>
       <div class="form-group">
         <label for="email">Email</label>
-        <input type="email" id="email" required>
+        <input type="email" id="email" maxlength="255" required autocomplete="email">
       </div>
       <div class="form-group">
-        <label for="password">Пароль</label>
-        <input type="password" id="password" minlength="6" required>
+        <label for="password">Пароль (минимум 8 символов)</label>
+        <input type="password" id="password" minlength="8" maxlength="100" required autocomplete="new-password">
       </div>
-      <button type="submit" class="btn btn-primary" style="width:100%;">Создать аккаунт</button>
+      <button type="submit" id="submit-btn" class="btn btn-primary" style="width:100%;">Создать аккаунт</button>
       <p class="muted" style="margin:14px 0 0;text-align:center;">
         Уже есть аккаунт? <a href="login.html">Войти</a>
       </p>
@@ -39,26 +39,37 @@
   <script src="js/api.js"></script>
   <script src="js/auth.js"></script>
   <script>
-    renderNavbar();
+    renderNavbar('register');
+
     document.getElementById('register-form').addEventListener('submit', async (e) => {
       e.preventDefault();
+      hideAlert('alert');
+      const btn = document.getElementById('submit-btn');
+      btn.disabled = true;
+
+      const nickname = document.getElementById('nickname').value.trim();
+
       try {
         const res = await apiRequest('user', '/api/auth/register', {
           method: 'POST',
           body: {
-            fullName: document.getElementById('fullName').value.trim(),
+            nickname,
             email: document.getElementById('email').value.trim(),
             password: document.getElementById('password').value
           }
         });
-        if (res && (res.token || res.accessToken)) {
-          localStorage.setItem('kc_token', res.token || res.accessToken);
+
+        if (res && res.token) {
+          localStorage.setItem('kc_token', res.token);
+          localStorage.setItem('kc_nickname', nickname);
           window.location.href = 'index.html';
         } else {
           window.location.href = 'login.html';
         }
       } catch (err) {
         showAlert('alert', err.message);
+      } finally {
+        btn.disabled = false;
       }
     });
   </script>

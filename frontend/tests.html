@@ -11,7 +11,7 @@
     <div class="page-header">
       <div>
         <h1>Мои тесты</h1>
-        <p class="page-subtitle">Управление черновиками, отправка на модерацию и публикация</p>
+        <p class="page-subtitle">Управление черновиками, публикация в каталог и просмотр статистики</p>
       </div>
       <a href="test-edit.html" class="btn btn-primary">+ Создать тест</a>
     </div>
@@ -23,11 +23,13 @@
           <tr>
             <th>Название</th>
             <th>Статус</th>
-            <th>Вопросов</th>
+            <th>Вопросы / Баллы</th>
             <th>Действия</th>
           </tr>
         </thead>
-        <tbody id="tests-body"></tbody>
+        <tbody id="tests-body">
+          <tr><td colspan="4" class="muted">Загрузка...</td></tr>
+        </tbody>
       </table>
     </div>
   </main>
@@ -38,45 +40,78 @@
     requireAuth();
     renderNavbar('tests');
 
-    function statusBadge(status) {
-      if (status === 'Published') return '<span class="badge badge-success">Published</span>';
-      if (status === 'PendingModeration' || status === 'OnModeration') return '<span class="badge badge-warn">На модерации</span>';
-      if (status === 'Rejected') return '<span class="badge badge-danger">Отклонён</span>';
-      return `<span class="badge">${status || 'Draft'}</span>`;
+    function statusBadge(test) {
+      if (test.isHidden || test.status === 'Blocked') {
+        return '<span class="badge badge-danger">Скрыт / Заблокирован</span>';
+      }
+      if (test.status === 'Published') {
+        return '<span class="badge badge-success">Опубликован</span>';
+      }
+      if (test.status === 'Archived') {
+        return '<span class="badge badge-warn">В архиве</span>';
+      }
+      return '<span class="badge">Черновик</span>';
     }
 
     async function loadMyTests() {
       try {
-        const data = await apiRequest('creation', '/api/tests/my');
-        const list = Array.isArray(data) ? data : (data.items || []);
+        const list = await apiRequest('creation', '/api/tests/my');
         const tbody = document.getElementById('tests-body');
 
-        if (!list.length) {
+        if (!Array.isArray(list) || !list.length) {
           tbody.innerHTML = '<tr><td colspan="4" class="muted">У вас пока нет созданных тестов.</td></tr>';
           return;
         }
 
-        tbody.innerHTML = list.map(t => `
-          <tr>
-            <td><strong>${t.title}</strong><div class="muted">${t.category || ''}</div></td>
-            <td>${statusBadge(t.status)}</td>
-            <td class="mono">${t.questionsCount ?? (t.questionIds ? t.questionIds.length : '—')}</td>
-            <td class="row-actions">
-              <a href="test-edit.html?id=${t.id}" class="btn btn-sm">Редактировать</a>
-              <a href="test-stats.html?testUid=${t.uid || t.id}" class="btn btn-sm">Статистика</a>
-              ${t.status !== 'Published' ? `<button class="btn btn-sm btn-primary" onclick="submitModeration('${t.id}')">На модерацию</button>` : ''}
-            </td>
-          </tr>
-        `).join('');
+        tbody.innerHTML = list.map(t => {
+          const isBlocked = t.isHidden || t.status === 'Blocked';
+          const isPublished = t.status === 'Published' && !t.isHidden;
+
+          return `
+            <tr>
+              <td>
+                <strong>${escapeHtml(t.title)}</strong>
+                <div class="muted">${escapeHtml(t.categoryName || '')} · Проходной балл: ${t.passingScore}%</div>
+              </td>
+              <td>${statusBadge(t)}</td>
+              <td class="mono">${t.questionsCount} вопр. / ${t.totalPoints} б.</td>
+              <td>
+                <div class="row-actions">
+                  ${!isBlocked ? `<a href="test-edit.html?uid=${t.uid}" class="btn btn-sm">Редактировать</a>` : ''}
+                  <a href="test-stats.html?testUid=${t.uid}" class="btn btn-sm">Статистика</a>
+                  ${!isBlocked && !isPublished
+                    ? `<button class="btn btn-sm btn-primary" onclick="publishTest('${t.uid}')">Опубликовать</button>`
+                    : ''}
+                  ${isPublished
+                    ? `<button class="btn btn-sm btn-danger" onclick="unpublishTest('${t.uid}')">Снять с публикации</button>`
+                    : ''}
+                </div>
+              </td>
+            </tr>
+          `;
+        }).join('');
       } catch (err) {
         showAlert('alert', err.message);
       }
     }
 
-    async function submitModeration(id) {
+    async function publishTest(uid) {
+      hideAlert('alert');
       try {
-        await apiRequest('creation', `/api/tests/${id}/submit`, { method: 'POST' });
-        showAlert('alert', 'Тест отправлен на модерацию.', 'success');
+        await apiRequest('creation', `/api/tests/${uid}/publish`, { method: 'POST' });
+        showAlert('alert', 'Тест опубликован и добавлен в каталог.', 'success');
+        loadMyTests();
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+
+    async function unpublishTest(uid) {
+      if (!confirm('Снять тест с публикации? Он исчезнет из общего каталога.')) return;
+      hideAlert('alert');
+      try {
+        await apiRequest('creation', `/api/tests/${uid}/unpublish`, { method: 'POST' });
+        showAlert('alert', 'Тест снят с публикации и переведён в черновики.', 'success');
         loadMyTests();
       } catch (err) {
         showAlert('alert', err.message);

@@ -16,6 +16,31 @@
     </div>
 
     <div id="alert" class="alert"></div>
+
+    <div class="grid-2">
+      <form id="nickname-form" class="card">
+        <h3 style="margin:0 0 12px;font-size:16px;">Изменить никнейм</h3>
+        <div class="form-group">
+          <label for="newNickname">Новый никнейм (3–64 символа)</label>
+          <input type="text" id="newNickname" minlength="3" maxlength="64" required>
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm">Сохранить никнейм</button>
+      </form>
+
+      <form id="password-form" class="card">
+        <h3 style="margin:0 0 12px;font-size:16px;">Смена пароля</h3>
+        <div class="form-group">
+          <label for="currentPassword">Текущий пароль</label>
+          <input type="password" id="currentPassword" required autocomplete="current-password">
+        </div>
+        <div class="form-group">
+          <label for="newPassword">Новый пароль (минимум 8 символов)</label>
+          <input type="password" id="newPassword" minlength="8" maxlength="100" required autocomplete="new-password">
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm">Обновить пароль</button>
+      </form>
+    </div>
+
     <h2 style="font-size:17px;margin:24px 0 12px;">История прохождений</h2>
     <div class="table-wrap">
       <table>
@@ -23,8 +48,8 @@
           <tr>
             <th>Тест</th>
             <th>Статус</th>
-            <th>Балл</th>
-            <th>Дата</th>
+            <th>Результат</th>
+            <th>Начато</th>
             <th></th>
           </tr>
         </thead>
@@ -41,14 +66,29 @@
     const currentUser = requireAuth();
     renderNavbar('profile');
 
+    function renderUserMeta(me) {
+      const roleLabel = me.isModerator ? 'Модератор' : 'Пользователь';
+      const regDate = me.createdAt ? new Date(me.createdAt).toLocaleDateString('ru-RU') : '';
+      document.getElementById('user-meta').textContent =
+        `${me.nickname} · ${me.email} · Роль: ${roleLabel} · С нами с ${regDate} · UID: ${me.uid}`;
+      document.getElementById('newNickname').value = me.nickname || '';
+    }
+
+    function statusBadge(status) {
+      if (status === 'Completed') return '<span class="badge badge-success">Завершён</span>';
+      if (status === 'Expired') return '<span class="badge badge-danger">Время истекло</span>';
+      return '<span class="badge badge-warn">В процессе</span>';
+    }
+
     async function loadProfile() {
       try {
         const me = await apiRequest('user', '/api/users/me');
-        document.getElementById('user-meta').textContent =
-          `${me.fullName || ''} · ${me.email} · Роль: ${me.role || currentUser.role}`;
+        localStorage.setItem('kc_nickname', me.nickname);
+        renderNavbar('profile');
+        renderUserMeta(me);
 
         const attempts = await apiRequest('taking', '/api/attempts/my');
-        const list = Array.isArray(attempts) ? attempts : (attempts.items || []);
+        const list = Array.isArray(attempts) ? attempts : [];
         const tbody = document.getElementById('attempts-body');
 
         if (!list.length) {
@@ -56,23 +96,83 @@
           return;
         }
 
-        tbody.innerHTML = list.map(a => `
-          <tr>
-            <td><strong>${a.testTitle || a.testUid}</strong></td>
-            <td><span class="badge ${a.isCompleted ? 'badge-success' : 'badge-warn'}">${a.isCompleted ? 'Завершён' : 'В процессе'}</span></td>
-            <td class="mono">${a.score != null ? `${a.score} / ${a.maxScore ?? '?'}` : '—'}</td>
-            <td class="muted">${a.startedAt ? new Date(a.startedAt).toLocaleString('ru-RU') : '—'}</td>
-            <td style="text-align:right;">
-              <a href="${a.isCompleted ? `result.html?attemptId=${a.id}` : `take-test.html?testUid=${a.testUid}`}" class="btn btn-sm">
-                ${a.isCompleted ? 'Результат' : 'Продолжить'}
-              </a>
-            </td>
-          </tr>
-        `).join('');
+        // Подгружаем баллы для завершённых попыток
+        const resultsMap = new Map();
+        await Promise.all(
+          list
+            .filter(a => a.status === 'Completed')
+            .map(async a => {
+              try {
+                const res = await apiRequest('taking', `/api/attempts/${a.attemptUid}/result`);
+                resultsMap.set(a.attemptUid, res);
+              } catch { /* игнорируем единичную ошибку */ }
+            })
+        );
+
+        tbody.innerHTML = list.map(a => {
+          const title = a.testSnapshot?.title || a.testUid;
+          const res = resultsMap.get(a.attemptUid);
+          const scoreText = res
+            ? `${res.score} / ${res.maxScore} (${res.percent}%)`
+            : '—';
+
+          let actionHtml = '';
+          if (a.status === 'Completed') {
+            actionHtml = `<a href="result.html?attemptUid=${a.attemptUid}" class="btn btn-sm">Результат</a>`;
+          } else if (a.status === 'InProgress') {
+            actionHtml = `<a href="take-test.html?attemptUid=${a.attemptUid}&testUid=${a.testUid}" class="btn btn-sm btn-primary">Продолжить</a>`;
+          }
+
+          return `
+            <tr>
+              <td><strong>${escapeHtml(title)}</strong></td>
+              <td>${statusBadge(a.status)}</td>
+              <td class="mono">${scoreText}</td>
+              <td class="muted">${a.startedAt ? new Date(a.startedAt).toLocaleString('ru-RU') : '—'}</td>
+              <td style="text-align:right;">${actionHtml}</td>
+            </tr>
+          `;
+        }).join('');
       } catch (err) {
         showAlert('alert', err.message);
       }
     }
+
+    document.getElementById('nickname-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      hideAlert('alert');
+      try {
+        const updated = await apiRequest('user', '/api/users/me/nickname', {
+          method: 'PUT',
+          body: { newNickname: document.getElementById('newNickname').value.trim() }
+        });
+        localStorage.setItem('kc_nickname', updated.nickname);
+        renderNavbar('profile');
+        renderUserMeta(updated);
+        showAlert('alert', 'Никнейм успешно обновлён.', 'success');
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    });
+
+    document.getElementById('password-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      hideAlert('alert');
+      try {
+        await apiRequest('user', '/api/auth/change-password', {
+          method: 'POST',
+          body: {
+            currentPassword: document.getElementById('currentPassword').value,
+            newPassword: document.getElementById('newPassword').value
+          }
+        });
+        document.getElementById('password-form').reset();
+        showAlert('alert', 'Пароль успешно изменён.', 'success');
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    });
+
     loadProfile();
   </script>
 </body>

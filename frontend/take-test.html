@@ -13,13 +13,16 @@
         <h1 id="test-title">Загрузка теста...</h1>
         <p class="page-subtitle" id="test-meta"></p>
       </div>
-      <div id="timer" class="badge mono" style="font-size:14px;padding:6px 10px;"></div>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span id="save-status" class="muted"></span>
+        <div id="timer" class="badge mono" style="font-size:14px;padding:6px 10px;display:none;"></div>
+      </div>
     </div>
 
     <div id="alert" class="alert"></div>
     <form id="attempt-form">
       <div id="questions-container"></div>
-      <button type="submit" id="submit-btn" class="btn btn-primary" style="display:none;">Завершить и отправить ответы</button>
+      <button type="submit" id="submit-btn" class="btn btn-primary" style="display:none;">Завершить тест и узнать результат</button>
     </form>
   </main>
 
@@ -28,36 +31,72 @@
   <script>
     requireAuth();
     renderNavbar();
-    const testUid = new URLSearchParams(window.location.search).get('testUid');
-    let attemptId = null;
-    let questions = [];
 
-    async function startAttempt() {
-      if (!testUid) return showAlert('alert', 'Не указан testUid в URL.');
+    const params = new URLSearchParams(window.location.search);
+    const testUid = params.get('testUid');
+    let attemptUid = params.get('attemptUid');
+    let questions = [];
+    let timerInterval = null;
+    let isFinishing = false;
+
+    async function initAttempt() {
+      if (!attemptUid && !testUid) {
+        showAlert('alert', 'Не указан testUid или attemptUid в адресной строке.');
+        return;
+      }
+
       try {
-        const data = await apiRequest('taking', '/api/attempts/start', {
-          method: 'POST',
-          body: { testUid }
+        let attemptData;
+        if (attemptUid) {
+          attemptData = await apiRequest('taking', `/api/attempts/${attemptUid}`);
+          if (attemptData.status === 'Completed') {
+            window.location.href = `result.html?attemptUid=${attemptUid}`;
+            return;
+          }
+          if (attemptData.status === 'Expired') {
+            showAlert('alert', 'Время на прохождение этой попытки уже истекло.');
+            return;
+          }
+        } else {
+          attemptData = await apiRequest('taking', `/api/attempts/start?testUid=${encodeURIComponent(testUid)}`, {
+            method: 'POST'
+          });
+          attemptUid = attemptData.attemptUid;
+          const nextUrl = new URL(window.location.href);
+          nextUrl.searchParams.set('attemptUid', attemptUid);
+          window.history.replaceState({}, '', nextUrl.toString());
+        }
+
+        const snapshot = attemptData.testSnapshot;
+        questions = (snapshot?.questions || []).slice().sort((a, b) => a.orderIndex - b.orderIndex);
+
+        const savedMap = new Map();
+        (attemptData.answers || []).forEach(ans => {
+          savedMap.set(ans.questionUid, ans);
         });
 
-        attemptId = data.attemptId || data.id;
-        questions = data.questions || [];
-        document.getElementById('test-title').textContent = data.testTitle || 'Тестирование';
-        document.getElementById('test-meta').textContent = `Вопросов: ${questions.length}`;
+        document.getElementById('test-title').textContent = snapshot?.title || 'Тестирование';
+        document.getElementById('test-meta').textContent =
+          `Вопросов: ${questions.length} · Проходной балл: ${snapshot?.passingScore ?? 0}%`;
 
-        if (data.expiresAt) startTimer(new Date(data.expiresAt));
+        if (attemptData.expiresAt) {
+          startTimer(new Date(attemptData.expiresAt));
+        }
 
         const container = document.getElementById('questions-container');
-        container.innerHTML = questions.map((q, idx) => `
-          <div class="card">
-            <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
-              <strong>Вопрос ${idx + 1}</strong>
-              <span class="mono muted">${q.points ?? 1} б.</span>
+        container.innerHTML = questions.map((q, idx) => {
+          const saved = savedMap.get(q.questionUid);
+          return `
+            <div class="card" data-question-uid="${q.questionUid}">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                <strong>Вопрос ${idx + 1}: ${escapeHtml(q.title)}</strong>
+                <span class="mono muted">${q.points} б.</span>
+              </div>
+              <p style="margin:0 0 12px;">${escapeHtml(q.text)}</p>
+              ${renderInputs(q, saved)}
             </div>
-            <p style="margin:0 0 12px;">${q.text}</p>
-            ${renderInputs(q)}
-          </div>
-        `).join('');
+          `;
+        }).join('');
 
         document.getElementById('submit-btn').style.display = 'inline-flex';
       } catch (err) {
@@ -65,55 +104,141 @@
       }
     }
 
-    function renderInputs(q) {
-      if (q.type === 'Text') {
-        return `<input type="text" name="q_${q.id}" placeholder="Введите ответ...">`;
+    function renderInputs(q, saved) {
+      if (q.questionType === 'TextInput') {
+        const val = saved?.textAnswer || '';
+        return `
+          <input
+            type="text"
+            name="q_${q.questionUid}"
+            maxlength="500"
+            value="${escapeHtml(val)}"
+            placeholder="Введите ответ..."
+            onchange="saveSingleAnswer('${q.questionUid}')">
+        `;
       }
-      const inputType = q.type === 'MultipleChoice' ? 'checkbox' : 'radio';
-      return (q.options || []).map(o => `
+
+      const selectedSet = new Set(saved?.selectedOptionUids || []);
+      const inputType = q.questionType === 'MultipleChoice' ? 'checkbox' : 'radio';
+      const sortedOptions = (q.options || []).slice().sort((a, b) => a.position - b.position);
+
+      return sortedOptions.map(o => `
         <label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-weight:400;cursor:pointer;">
-          <input type="${inputType}" name="q_${q.id}" value="${o.id}">
-          <span>${o.text}</span>
+          <input
+            type="${inputType}"
+            name="q_${q.questionUid}"
+            value="${o.uid}"
+            ${selectedSet.has(o.uid) ? 'checked' : ''}
+            onchange="saveSingleAnswer('${q.questionUid}')">
+          <span>${escapeHtml(o.text)}</span>
         </label>
       `).join('');
     }
 
+    function collectQuestionPayload(q) {
+      if (q.questionType === 'TextInput') {
+        const raw = document.querySelector(`input[name="q_${q.questionUid}"]`)?.value || '';
+        const trimmed = raw.trim();
+        if (!trimmed) return null;
+        return {
+          questionUid: q.questionUid,
+          selectedOptionUids: [],
+          textAnswer: trimmed
+        };
+      }
+
+      const checked = Array.from(document.querySelectorAll(`input[name="q_${q.questionUid}"]:checked`))
+        .map(el => el.value);
+      if (!checked.length) return null;
+
+      return {
+        questionUid: q.questionUid,
+        selectedOptionUids: checked,
+        textAnswer: null
+      };
+    }
+
+    async function saveSingleAnswer(questionUid) {
+      if (!attemptUid || isFinishing) return;
+      const q = questions.find(item => item.questionUid === questionUid);
+      if (!q) return;
+
+      const payload = collectQuestionPayload(q);
+      if (!payload) return;
+
+      const statusEl = document.getElementById('save-status');
+      statusEl.textContent = 'Сохранение...';
+      try {
+        await apiRequest('taking', `/api/attempts/${attemptUid}/answer`, {
+          method: 'POST',
+          body: payload
+        });
+        statusEl.textContent = 'Ответ сохранён';
+      } catch (err) {
+        statusEl.textContent = '';
+        showAlert('alert', err.message);
+      }
+    }
+
     function startTimer(expiresAt) {
       const el = document.getElementById('timer');
+      el.style.display = 'inline-block';
+
       const tick = () => {
         const diff = Math.max(0, Math.floor((expiresAt - Date.now()) / 1000));
         const m = String(Math.floor(diff / 60)).padStart(2, '0');
         const s = String(diff % 60).padStart(2, '0');
         el.textContent = `Осталось: ${m}:${s}`;
-        if (diff === 0) document.getElementById('attempt-form').requestSubmit();
+        if (diff === 0 && !isFinishing) {
+          clearInterval(timerInterval);
+          finishAttempt();
+        }
       };
+
       tick();
-      setInterval(tick, 1000);
+      timerInterval = setInterval(tick, 1000);
+    }
+
+    async function finishAttempt() {
+      if (isFinishing || !attemptUid) return;
+      isFinishing = true;
+      hideAlert('alert');
+
+      const btn = document.getElementById('submit-btn');
+      btn.disabled = true;
+      btn.textContent = 'Проверка ответов...';
+
+      try {
+        // Финально сохраняем все заполненные ответы
+        for (const q of questions) {
+          const payload = collectQuestionPayload(q);
+          if (payload) {
+            await apiRequest('taking', `/api/attempts/${attemptUid}/answer`, {
+              method: 'POST',
+              body: payload
+            });
+          }
+        }
+
+        await apiRequest('taking', `/api/attempts/${attemptUid}/finish`, {
+          method: 'POST'
+        });
+
+        window.location.href = `result.html?attemptUid=${attemptUid}`;
+      } catch (err) {
+        isFinishing = false;
+        btn.disabled = false;
+        btn.textContent = 'Завершить тест и узнать результат';
+        showAlert('alert', err.message);
+      }
     }
 
     document.getElementById('attempt-form').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const answers = questions.map(q => {
-        if (q.type === 'Text') {
-          const val = document.querySelector(`input[name="q_${q.id}"]`)?.value || '';
-          return { questionId: q.id, textAnswer: val.trim(), selectedOptionIds: [] };
-        }
-        const checked = Array.from(document.querySelectorAll(`input[name="q_${q.id}"]:checked`)).map(i => i.value);
-        return { questionId: q.id, selectedOptionIds: checked, textAnswer: null };
-      });
-
-      try {
-        await apiRequest('taking', `/api/attempts/${attemptId}/submit`, {
-          method: 'POST',
-          body: { answers }
-        });
-        window.location.href = `result.html?attemptId=${attemptId}`;
-      } catch (err) {
-        showAlert('alert', err.message);
-      }
+      await finishAttempt();
     });
 
-    startAttempt();
+    initAttempt();
   </script>
 </body>
 </html>

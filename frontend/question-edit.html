@@ -11,30 +11,49 @@
     <div class="page-header">
       <div>
         <h1 id="page-title">Новый вопрос</h1>
-        <p class="page-subtitle">Формулировка, тип ответа и правильные варианты</p>
+        <p class="page-subtitle">Категория, формулировка, тип ответа и правильные варианты</p>
       </div>
       <a href="questions.html" class="btn">Назад к списку</a>
     </div>
 
     <div id="alert" class="alert"></div>
     <form id="question-form" class="card">
+      <div class="grid-2">
+        <div class="form-group">
+          <label for="categoryUid">Категория</label>
+          <select id="categoryUid" required></select>
+        </div>
+        <div class="form-group">
+          <label for="visibility">Видимость вопроса</label>
+          <select id="visibility">
+            <option value="Public">Публичный (Public)</option>
+            <option value="Private">Приватный (Private)</option>
+          </select>
+        </div>
+      </div>
+
       <div class="form-group">
-        <label for="text">Формулировка вопроса</label>
-        <textarea id="text" required></textarea>
+        <label for="title">Краткий заголовок вопроса (3–200 символов)</label>
+        <input type="text" id="title" minlength="3" maxlength="200" placeholder="Например: Индексы в PostgreSQL" required>
+      </div>
+
+      <div class="form-group">
+        <label for="text">Формулировка вопроса (3–2000 символов)</label>
+        <textarea id="text" minlength="3" maxlength="2000" required></textarea>
       </div>
 
       <div class="grid-2">
         <div class="form-group">
-          <label for="type">Тип вопроса</label>
-          <select id="type" onchange="toggleType()">
+          <label for="questionType">Тип вопроса</label>
+          <select id="questionType" onchange="onTypeChange()">
             <option value="SingleChoice">Один вариант (SingleChoice)</option>
             <option value="MultipleChoice">Несколько вариантов (MultipleChoice)</option>
-            <option value="Text">Текстовый ввод (Text)</option>
+            <option value="TextInput">Текстовый ввод (TextInput)</option>
           </select>
         </div>
         <div class="form-group">
-          <label for="points">Баллы за правильный ответ</label>
-          <input type="number" id="points" value="1" min="1" required>
+          <label for="tags">Теги (через запятую)</label>
+          <input type="text" id="tags" placeholder="sql, индексы, b-tree">
         </div>
       </div>
 
@@ -45,12 +64,12 @@
       </div>
 
       <div id="text-answer-section" class="form-group" style="display:none;">
-        <label for="correctText">Эталонный текстовый ответ</label>
-        <input type="text" id="correctText" placeholder="Точное совпадение (без учёта регистра)">
+        <label for="correctTextAnswer">Эталонный текстовый ответ</label>
+        <input type="text" id="correctTextAnswer" maxlength="500" placeholder="Точное совпадение (без учёта регистра)">
       </div>
 
       <div style="margin-top:18px;display:flex;gap:10px;">
-        <button type="submit" class="btn btn-primary">Сохранить вопрос</button>
+        <button type="submit" id="submit-btn" class="btn btn-primary">Сохранить вопрос</button>
         <a href="questions.html" class="btn">Отмена</a>
       </div>
     </form>
@@ -61,41 +80,63 @@
   <script>
     requireAuth();
     renderNavbar('questions');
-    const questionId = new URLSearchParams(window.location.search).get('id');
+    const questionUid = new URLSearchParams(window.location.search).get('uid');
 
-    function toggleType() {
-      const isText = document.getElementById('type').value === 'Text';
+    function onTypeChange() {
+      const type = document.getElementById('questionType').value;
+      const isText = type === 'TextInput';
       document.getElementById('options-section').style.display = isText ? 'none' : 'block';
       document.getElementById('text-answer-section').style.display = isText ? 'block' : 'none';
+
+      const inputType = type === 'MultipleChoice' ? 'checkbox' : 'radio';
+      document.querySelectorAll('#options-list .opt-correct').forEach(inp => {
+        inp.type = inputType;
+        inp.name = 'correctOption';
+      });
     }
 
     function addOptionRow(text = '', isCorrect = false) {
+      const type = document.getElementById('questionType').value;
+      const inputType = type === 'MultipleChoice' ? 'checkbox' : 'radio';
       const container = document.getElementById('options-list');
+
       const row = document.createElement('div');
       row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:8px;';
       row.innerHTML = `
-        <input type="checkbox" class="opt-correct" ${isCorrect ? 'checked' : ''} title="Правильный ответ">
-        <input type="text" class="opt-text" value="${text.replace(/"/g, '&quot;')}" placeholder="Текст варианта">
+        <input type="${inputType}" name="correctOption" class="opt-correct" ${isCorrect ? 'checked' : ''} title="Правильный ответ">
+        <input type="text" class="opt-text" maxlength="500" value="${escapeHtml(text)}" placeholder="Текст варианта">
         <button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">×</button>
       `;
       container.appendChild(row);
     }
 
     async function init() {
-      if (!questionId) {
-        addOptionRow();
-        addOptionRow();
-        return;
-      }
-      document.getElementById('page-title').textContent = 'Редактирование вопроса';
       try {
-        const q = await apiRequest('creation', `/api/questions/${questionId}`);
-        document.getElementById('text').value = q.text;
-        document.getElementById('type').value = q.type || 'SingleChoice';
-        document.getElementById('points').value = q.points ?? 1;
-        document.getElementById('correctText').value = q.correctText || '';
-        toggleType();
-        (q.options || []).forEach(o => addOptionRow(o.text, o.isCorrect));
+        const categories = await apiRequest('creation', '/api/categories');
+        const catSelect = document.getElementById('categoryUid');
+        catSelect.innerHTML = (categories || []).map(c =>
+          `<option value="${c.uid}">${escapeHtml(c.name)}</option>`
+        ).join('');
+
+        if (!questionUid) {
+          addOptionRow();
+          addOptionRow();
+          return;
+        }
+
+        document.getElementById('page-title').textContent = 'Редактирование вопроса';
+        const q = await apiRequest('creation', `/api/questions/${questionUid}`);
+
+        catSelect.value = q.categoryUid;
+        document.getElementById('visibility').value = q.isPublic ? 'Public' : 'Private';
+        document.getElementById('title').value = q.title || '';
+        document.getElementById('text').value = q.text || '';
+        document.getElementById('questionType').value = q.questionType || 'SingleChoice';
+        document.getElementById('tags').value = Array.isArray(q.tags) ? q.tags.join(', ') : '';
+        document.getElementById('correctTextAnswer').value = q.correctTextAnswer || '';
+
+        onTypeChange();
+        (q.answerOptions || []).forEach(o => addOptionRow(o.text, o.isCorrect));
       } catch (err) {
         showAlert('alert', err.message);
       }
@@ -103,29 +144,50 @@
 
     document.getElementById('question-form').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const type = document.getElementById('type').value;
-      const options = type === 'Text' ? [] : Array.from(document.querySelectorAll('#options-list > div')).map(row => ({
-        text: row.querySelector('.opt-text').value.trim(),
-        isCorrect: row.querySelector('.opt-correct').checked
-      })).filter(o => o.text);
+      hideAlert('alert');
+      const btn = document.getElementById('submit-btn');
+      btn.disabled = true;
+
+      const questionType = document.getElementById('questionType').value;
+      const answerOptions = questionType === 'TextInput'
+        ? []
+        : Array.from(document.querySelectorAll('#options-list > div'))
+            .map(row => ({
+              text: row.querySelector('.opt-text').value.trim(),
+              isCorrect: row.querySelector('.opt-correct').checked
+            }))
+            .filter(o => o.text)
+            .map((o, idx) => ({ ...o, position: idx }));
+
+      const tags = document.getElementById('tags').value
+        .split(',')
+        .map(t => t.trim())
+        .filter(Boolean);
 
       const payload = {
+        categoryUid: document.getElementById('categoryUid').value,
+        title: document.getElementById('title').value.trim(),
         text: document.getElementById('text').value.trim(),
-        type,
-        points: Number(document.getElementById('points').value),
-        options,
-        correctText: type === 'Text' ? document.getElementById('correctText').value.trim() : null
+        questionType,
+        correctTextAnswer: questionType === 'TextInput'
+          ? document.getElementById('correctTextAnswer').value.trim()
+          : null,
+        visibility: document.getElementById('visibility').value,
+        answerOptions,
+        tags
       };
 
       try {
-        if (questionId) {
-          await apiRequest('creation', `/api/questions/${questionId}`, { method: 'PUT', body: payload });
+        if (questionUid) {
+          await apiRequest('creation', `/api/questions/${questionUid}`, { method: 'PUT', body: payload });
         } else {
           await apiRequest('creation', '/api/questions', { method: 'POST', body: payload });
         }
         window.location.href = 'questions.html';
       } catch (err) {
         showAlert('alert', err.message);
+      } finally {
+        btn.disabled = false;
       }
     });
 

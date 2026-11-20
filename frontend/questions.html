@@ -21,13 +21,16 @@
       <table>
         <thead>
           <tr>
-            <th>Текст вопроса</th>
+            <th>Вопрос</th>
+            <th>Категория</th>
             <th>Тип</th>
-            <th>Баллы</th>
+            <th>Доступ</th>
             <th></th>
           </tr>
         </thead>
-        <tbody id="questions-body"></tbody>
+        <tbody id="questions-body">
+          <tr><td colspan="5" class="muted">Загрузка...</td></tr>
+        </tbody>
       </table>
     </div>
   </main>
@@ -38,42 +41,70 @@
     requireAuth();
     renderNavbar('questions');
 
+    function typeLabel(type) {
+      if (type === 'SingleChoice') return 'Один выбор';
+      if (type === 'MultipleChoice') return 'Множ. выбор';
+      if (type === 'TextInput') return 'Текстовый';
+      return type || '—';
+    }
+
     async function loadQuestions() {
       try {
-        const data = await apiRequest('creation', '/api/questions');
-        const list = Array.isArray(data) ? data : (data.items || []);
+        const list = await apiRequest('creation', '/api/questions/my');
         const tbody = document.getElementById('questions-body');
 
-        if (!list.length) {
-          tbody.innerHTML = '<tr><td colspan="4" class="muted">Вопросов пока нет. Создайте первый вопрос.</td></tr>';
+        if (!Array.isArray(list) || !list.length) {
+          tbody.innerHTML = '<tr><td colspan="5" class="muted">Вопросов пока нет. Создайте первый вопрос.</td></tr>';
           return;
         }
 
-        tbody.innerHTML = list.map(q => `
-          <tr>
-            <td>${q.text}</td>
-            <td><span class="badge">${q.type || 'SingleChoice'}</span></td>
-            <td class="mono">${q.points ?? 1}</td>
-            <td style="text-align:right;" class="row-actions">
-              <a href="question-edit.html?id=${q.id}" class="btn btn-sm">Изменить</a>
-              <button class="btn btn-sm btn-danger" onclick="deleteQuestion('${q.id}')">Удалить</button>
-            </td>
-          </tr>
-        `).join('');
+        tbody.innerHTML = list.map(q => {
+          const tagsHtml = Array.isArray(q.tags) && q.tags.length
+            ? `<div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap;">${q.tags.map(t => `<span class="badge">#${escapeHtml(t)}</span>`).join('')}</div>`
+            : '';
+
+          return `
+            <tr>
+              <td>
+                <strong>${escapeHtml(q.title)}</strong>
+                <div class="muted">${escapeHtml(q.text)}</div>
+                ${tagsHtml}
+              </td>
+              <td><span class="badge">${escapeHtml(q.categoryName || '—')}</span></td>
+              <td><span class="badge badge-info">${escapeHtml(typeLabel(q.questionType))}</span></td>
+              <td>
+                ${q.isBlocked
+                  ? '<span class="badge badge-danger">Заблокирован</span>'
+                  : (q.isPublic
+                      ? '<span class="badge badge-success">Public</span>'
+                      : '<span class="badge">Private</span>')}
+              </td>
+              <td style="text-align:right;">
+                <div class="row-actions" style="justify-content:flex-end;">
+                  ${!q.isBlocked ? `<a href="question-edit.html?uid=${q.uid}" class="btn btn-sm">Изменить</a>` : ''}
+                  <button class="btn btn-sm btn-danger" onclick="deleteQuestion('${q.uid}')">Удалить</button>
+                </div>
+              </td>
+            </tr>
+          `;
+        }).join('');
       } catch (err) {
         showAlert('alert', err.message);
       }
     }
 
-    async function deleteQuestion(id) {
+    async function deleteQuestion(uid) {
       if (!confirm('Удалить вопрос?')) return;
+      hideAlert('alert');
       try {
-        await apiRequest('creation', `/api/questions/${id}`, { method: 'DELETE' });
+        await apiRequest('creation', `/api/questions/${uid}`, { method: 'DELETE' });
+        showAlert('alert', 'Вопрос удалён.', 'success');
         loadQuestions();
       } catch (err) {
         showAlert('alert', err.message);
       }
     }
+
     loadQuestions();
   </script>
 </body>

@@ -11,7 +11,7 @@
     <div class="page-header">
       <div>
         <h1>Вход в систему</h1>
-        <p class="page-subtitle">Используйте учётную запись студента или автора</p>
+        <p class="page-subtitle">Используйте учётную запись студента, автора или модератора</p>
       </div>
     </div>
 
@@ -25,7 +25,7 @@
         <label for="password">Пароль</label>
         <input type="password" id="password" required autocomplete="current-password">
       </div>
-      <button type="submit" class="btn btn-primary" style="width:100%;">Войти</button>
+      <button type="submit" id="submit-btn" class="btn btn-primary" style="width:100%;">Войти</button>
       <p class="muted" style="margin:14px 0 0;text-align:center;">
         Нет аккаунта? <a href="register.html">Зарегистрироваться</a>
       </p>
@@ -35,9 +35,14 @@
   <script src="js/api.js"></script>
   <script src="js/auth.js"></script>
   <script>
-    renderNavbar();
+    renderNavbar('login');
+
     document.getElementById('login-form').addEventListener('submit', async (e) => {
       e.preventDefault();
+      hideAlert('alert');
+      const btn = document.getElementById('submit-btn');
+      btn.disabled = true;
+
       try {
         const res = await apiRequest('user', '/api/auth/login', {
           method: 'POST',
@@ -46,10 +51,19 @@
             password: document.getElementById('password').value
           }
         });
-        localStorage.setItem('kc_token', res.token || res.accessToken);
+
+        localStorage.setItem('kc_token', res.token);
+
+        try {
+          const me = await apiRequest('user', '/api/users/me');
+          if (me?.nickname) localStorage.setItem('kc_nickname', me.nickname);
+        } catch { /* игнорируем, подгрузится позже */ }
+
         window.location.href = 'index.html';
       } catch (err) {
         showAlert('alert', err.message);
+      } finally {
+        btn.disabled = false;
       }
     });
   </script>

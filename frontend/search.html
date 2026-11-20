@@ -11,20 +11,44 @@
     <div class="page-header">
       <div>
         <h1>Поиск тестов</h1>
-        <p class="page-subtitle">Фильтрация по названию, тегам и категории</p>
+        <p class="page-subtitle">Полнотекстовый поиск и фильтрация по категориям, тегам и показателям</p>
       </div>
     </div>
 
-    <form id="search-form" class="card" style="display:grid;grid-template-columns:2fr 1fr auto;gap:12px;align-items:end;">
-      <div class="form-group" style="margin:0;">
-        <label for="q">Ключевые слова</label>
-        <input type="text" id="q" placeholder="Например: PostgreSQL, алгоритмы, HTTP...">
+    <form id="search-form" class="card">
+      <div class="grid-2">
+        <div class="form-group">
+          <label for="q">Поисковый запрос</label>
+          <input type="text" id="q" maxlength="200" placeholder="Например: PostgreSQL, алгоритмы, HTTP...">
+        </div>
+        <div class="form-group">
+          <label for="category">Категория</label>
+          <select id="category">
+            <option value="">Все категории</option>
+          </select>
+        </div>
       </div>
-      <div class="form-group" style="margin:0;">
-        <label for="category">Категория</label>
-        <input type="text" id="category" placeholder="Все категории">
+
+      <div class="grid-3" style="align-items:end;">
+        <div class="form-group" style="margin:0;">
+          <label for="tag">Тег</label>
+          <input type="text" id="tag" maxlength="50" placeholder="Например: sql">
+        </div>
+        <div class="form-group" style="margin:0;">
+          <label for="sort">Сортировка</label>
+          <select id="sort">
+            <option value="relevance">По релевантности</option>
+            <option value="popular">По популярности</option>
+            <option value="newest">Сначала новые</option>
+            <option value="pass_rate">По проценту сдачи</option>
+            <option value="avg_score">По среднему баллу</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <button type="submit" class="btn btn-primary" style="flex:1;">Найти</button>
+          <button type="button" class="btn" onclick="resetSearch()">Сбросить</button>
+        </div>
       </div>
-      <button type="submit" class="btn btn-primary">Найти</button>
     </form>
 
     <div id="alert" class="alert"></div>
@@ -32,17 +56,24 @@
       <table>
         <thead>
           <tr>
-            <th>Название</th>
+            <th>Тест</th>
             <th>Категория</th>
-            <th>Вопросов</th>
-            <th>Прохождений</th>
+            <th>Попыток</th>
+            <th>Успешно</th>
+            <th>Ср. балл</th>
             <th></th>
           </tr>
         </thead>
         <tbody id="results-body">
-          <tr><td colspan="5" class="muted">Введите запрос или нажмите «Найти»</td></tr>
+          <tr><td colspan="6" class="muted">Загрузка...</td></tr>
         </tbody>
       </table>
+    </div>
+
+    <div id="pagination" style="display:none;justify-content:space-between;align-items:center;margin-top:16px;">
+      <button type="button" id="prev-btn" class="btn btn-sm" onclick="changePage(-1)">← Назад</button>
+      <span id="page-info" class="muted mono"></span>
+      <button type="button" id="next-btn" class="btn btn-sm" onclick="changePage(1)">Вперёд →</button>
     </div>
   </main>
 
@@ -51,39 +82,98 @@
   <script>
     renderNavbar('search');
 
+    let currentPage = 1;
+    const pageSize = 15;
+
+    async function loadCategories() {
+      try {
+        const categories = await apiRequest('creation', '/api/categories');
+        const select = document.getElementById('category');
+        (categories || []).forEach(c => {
+          const opt = document.createElement('option');
+          opt.value = c.name;
+          opt.textContent = c.name;
+          select.appendChild(opt);
+        });
+      } catch { /* игнорируем */ }
+    }
+
+    function resetSearch() {
+      document.getElementById('search-form').reset();
+      currentPage = 1;
+      runSearch();
+    }
+
+    function changePage(delta) {
+      currentPage = Math.max(1, currentPage + delta);
+      runSearch();
+    }
+
     async function runSearch(e) {
-      if (e) e.preventDefault();
+      if (e) {
+        e.preventDefault();
+        currentPage = 1;
+      }
+      hideAlert('alert');
+
       const q = document.getElementById('q').value.trim();
-      const category = document.getElementById('category').value.trim();
-      const params = new URLSearchParams();
-      if (q) params.set('query', q);
+      const category = document.getElementById('category').value;
+      const tag = document.getElementById('tag').value.trim();
+      const sort = document.getElementById('sort').value;
+
+      const params = new URLSearchParams({
+        sort,
+        page: String(currentPage),
+        size: String(pageSize)
+      });
+      if (q) params.set('q', q);
       if (category) params.set('category', category);
+      if (tag) params.set('tag', tag);
 
       try {
-        const data = await apiRequest('search', `/api/tests?${params.toString()}`);
-        const items = Array.isArray(data) ? data : (data.items || []);
+        const data = await apiRequest('search', `/api/search?${params.toString()}`);
+        const items = data?.items || [];
         const tbody = document.getElementById('results-body');
+        const paginationEl = document.getElementById('pagination');
 
         if (!items.length) {
-          tbody.innerHTML = '<tr><td colspan="5" class="muted">Ничего не найдено.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="6" class="muted">Ничего не найдено.</td></tr>';
+          paginationEl.style.display = 'none';
           return;
         }
 
         tbody.innerHTML = items.map(t => `
           <tr>
-            <td><strong>${t.title}</strong><div class="muted">${t.description || ''}</div></td>
-            <td><span class="badge">${t.category || 'Общее'}</span></td>
-            <td class="mono">${t.questionsCount ?? '—'}</td>
-            <td class="mono">${t.attemptsCount ?? 0}</td>
-            <td style="text-align:right;"><a href="take-test.html?testUid=${t.uid || t.id}" class="btn btn-sm">Открыть</a></td>
+            <td>
+              <strong>${escapeHtml(t.title)}</strong>
+              <div class="muted">${escapeHtml(t.description || '')}</div>
+            </td>
+            <td><span class="badge">${escapeHtml(t.subject || 'Общее')}</span></td>
+            <td class="mono">${t.totalAttempts ?? 0}</td>
+            <td class="mono">${t.totalAttempts > 0 ? Math.round(t.passRate) + '%' : '—'}</td>
+            <td class="mono">${t.totalAttempts > 0 ? Math.round(t.avgScore) + '%' : '—'}</td>
+            <td style="text-align:right;">
+              <a href="take-test.html?testUid=${t.testUid}" class="btn btn-sm btn-primary">Пройти</a>
+            </td>
           </tr>
         `).join('');
+
+        if (data.totalPages > 1) {
+          paginationEl.style.display = 'flex';
+          document.getElementById('page-info').textContent =
+            `Страница ${data.page} из ${data.totalPages} (найдено: ${data.totalCount})`;
+          document.getElementById('prev-btn').disabled = data.page <= 1;
+          document.getElementById('next-btn').disabled = data.page >= data.totalPages;
+        } else {
+          paginationEl.style.display = 'none';
+        }
       } catch (err) {
         showAlert('alert', err.message);
       }
     }
 
     document.getElementById('search-form').addEventListener('submit', runSearch);
+    loadCategories();
     runSearch();
   </script>
 </body>

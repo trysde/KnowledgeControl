@@ -7,45 +7,65 @@
 </head>
 <body>
   <header id="navbar" class="topbar"></header>
-  <main class="container" style="max-width:780px;">
+  <main class="container" style="max-width:820px;">
     <div class="page-header">
       <div>
         <h1 id="page-title">Создание теста</h1>
-        <p class="page-subtitle">Метаданные теста и выбор вопросов из банка</p>
+        <p class="page-subtitle">Метаданные теста, параметры оценивания и выбор вопросов из банка</p>
       </div>
       <a href="tests.html" class="btn">К моим тестам</a>
     </div>
 
     <div id="alert" class="alert"></div>
     <form id="test-form" class="card">
-      <div class="form-group">
-        <label for="title">Название теста</label>
-        <input type="text" id="title" required>
-      </div>
-      <div class="form-group">
-        <label for="description">Описание</label>
-        <textarea id="description"></textarea>
-      </div>
       <div class="grid-2">
         <div class="form-group">
-          <label for="category">Категория</label>
-          <input type="text" id="category" placeholder="Например: Базы данных">
+          <label for="categoryUid">Категория</label>
+          <select id="categoryUid" required></select>
         </div>
         <div class="form-group">
-          <label for="timeLimit">Ограничение по времени (минут, 0 — без лимита)</label>
-          <input type="number" id="timeLimit" value="15" min="0">
+          <label for="passingScore">Проходной балл (0–100%)</label>
+          <input type="number" id="passingScore" value="60" min="0" max="100" required>
         </div>
       </div>
 
       <div class="form-group">
-        <label>Выберите вопросы для теста</label>
-        <div id="questions-checklist" style="border:1px solid var(--border);border-radius:var(--radius);padding:10px;max-height:260px;overflow-y:auto;">
+        <label for="title">Название теста (3–200 символов)</label>
+        <input type="text" id="title" minlength="3" maxlength="200" required>
+      </div>
+
+      <div class="form-group">
+        <label for="description">Описание</label>
+        <textarea id="description" maxlength="2000"></textarea>
+      </div>
+
+      <div class="grid-2">
+        <div class="form-group">
+          <label for="timeLimitMinutes">Лимит времени (минут, 0 — без лимита)</label>
+          <input type="number" id="timeLimitMinutes" value="15" min="0">
+        </div>
+        <div class="form-group">
+          <label for="maxAttempts">Макс. количество попыток (пусто — без лимита)</label>
+          <input type="number" id="maxAttempts" min="1" placeholder="Без ограничений">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer;">
+          <input type="checkbox" id="isPublic" checked>
+          <span>Публичный тест (отображается в общем каталоге после публикации)</span>
+        </label>
+      </div>
+
+      <div class="form-group">
+        <label>Выберите вопросы для теста и укажите баллы за каждый</label>
+        <div id="questions-checklist" style="border:1px solid var(--border);border-radius:var(--radius);padding:10px;max-height:340px;overflow-y:auto;">
           <span class="muted">Загрузка списка вопросов...</span>
         </div>
       </div>
 
       <div style="margin-top:18px;display:flex;gap:10px;">
-        <button type="submit" class="btn btn-primary">Сохранить тест</button>
+        <button type="submit" id="submit-btn" class="btn btn-primary">Сохранить тест</button>
         <a href="tests.html" class="btn">Отмена</a>
       </div>
     </form>
@@ -56,36 +76,79 @@
   <script>
     requireAuth();
     renderNavbar('tests');
-    const testId = new URLSearchParams(window.location.search).get('id');
+    const testUid = new URLSearchParams(window.location.search).get('uid');
 
     async function init() {
       try {
-        const qData = await apiRequest('creation', '/api/questions');
-        const allQuestions = Array.isArray(qData) ? qData : (qData.items || []);
-        let selectedIds = new Set();
+        const [categories, myQuestions] = await Promise.all([
+          apiRequest('creation', '/api/categories'),
+          apiRequest('creation', '/api/questions/my')
+        ]);
 
-        if (testId) {
+        const catSelect = document.getElementById('categoryUid');
+        catSelect.innerHTML = (categories || []).map(c =>
+          `<option value="${c.uid}">${escapeHtml(c.name)}</option>`
+        ).join('');
+
+        const selectedMap = new Map(); // questionUid -> { points, orderIndex }
+
+        if (testUid) {
           document.getElementById('page-title').textContent = 'Редактирование теста';
-          const test = await apiRequest('creation', `/api/tests/${testId}`);
+          const test = await apiRequest('creation', `/api/tests/${testUid}`);
+
+          catSelect.value = test.categoryUid;
           document.getElementById('title').value = test.title || '';
           document.getElementById('description').value = test.description || '';
-          document.getElementById('category').value = test.category || '';
-          document.getElementById('timeLimit').value = test.timeLimitMinutes ?? 0;
-          selectedIds = new Set(test.questionIds || (test.questions || []).map(q => q.id));
+          document.getElementById('passingScore').value = test.passingScore ?? 60;
+          document.getElementById('timeLimitMinutes').value = test.timeLimitSeconds
+            ? Math.ceil(test.timeLimitSeconds / 60)
+            : 0;
+          document.getElementById('maxAttempts').value = test.maxAttempts ?? '';
+          document.getElementById('isPublic').checked = test.isPublic !== false;
+
+          (test.questions || []).forEach(q => {
+            selectedMap.set(q.questionUid, { points: q.points, orderIndex: q.orderIndex });
+          });
         }
 
         const box = document.getElementById('questions-checklist');
-        if (!allQuestions.length) {
+        const available = (myQuestions || []).filter(q => !q.isBlocked);
+
+        if (!available.length) {
           box.innerHTML = '<span class="muted">Сначала добавьте вопросы в разделе «Вопросы».</span>';
           return;
         }
 
-        box.innerHTML = allQuestions.map(q => `
-          <label style="display:flex;align-items:flex-start;gap:8px;padding:6px 4px;border-bottom:1px solid var(--border);font-weight:400;cursor:pointer;">
-            <input type="checkbox" name="qIds" value="${q.id}" ${selectedIds.has(q.id) ? 'checked' : ''} style="margin-top:3px;">
-            <span>${q.text} <span class="badge">${q.points ?? 1} б.</span></span>
-          </label>
-        `).join('');
+        // Сортируем: сначала уже выбранные в тесте по orderIndex, затем остальные
+        available.sort((a, b) => {
+          const sa = selectedMap.get(a.uid);
+          const sb = selectedMap.get(b.uid);
+          if (sa && sb) return sa.orderIndex - sb.orderIndex;
+          if (sa) return -1;
+          if (sb) return 1;
+          return 0;
+        });
+
+        box.innerHTML = available.map(q => {
+          const sel = selectedMap.get(q.uid);
+          const points = sel ? sel.points : 1;
+          return `
+            <div class="q-row" style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 4px;border-bottom:1px solid var(--border);">
+              <label style="display:flex;align-items:flex-start;gap:8px;margin:0;font-weight:400;cursor:pointer;flex:1;">
+                <input type="checkbox" class="q-check" value="${q.uid}" ${sel ? 'checked' : ''} style="margin-top:3px;">
+                <span>
+                  <strong>${escapeHtml(q.title)}</strong>
+                  <span class="badge">${escapeHtml(q.categoryName || '')}</span>
+                  <div class="muted">${escapeHtml(q.text)}</div>
+                </span>
+              </label>
+              <div style="display:flex;align-items:center;gap:6px;white-space:nowrap;">
+                <span class="muted">Баллы:</span>
+                <input type="number" class="q-points" value="${points}" min="1" max="100" style="width:68px;padding:4px 8px;">
+              </div>
+            </div>
+          `;
+        }).join('');
       } catch (err) {
         showAlert('alert', err.message);
       }
@@ -93,24 +156,54 @@
 
     document.getElementById('test-form').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const questionIds = Array.from(document.querySelectorAll('input[name="qIds"]:checked')).map(cb => cb.value);
+      hideAlert('alert');
+
+      const questions = [];
+      document.querySelectorAll('#questions-checklist .q-row').forEach(row => {
+        const cb = row.querySelector('.q-check');
+        if (cb && cb.checked) {
+          const pts = Math.max(1, Number(row.querySelector('.q-points').value) || 1);
+          questions.push({
+            questionUid: cb.value,
+            orderIndex: questions.length,
+            points: pts
+          });
+        }
+      });
+
+      if (!questions.length) {
+        showAlert('alert', 'Выберите хотя бы один вопрос для теста.');
+        return;
+      }
+
+      const minutes = Number(document.getElementById('timeLimitMinutes').value) || 0;
+      const maxAttemptsRaw = document.getElementById('maxAttempts').value.trim();
+
       const payload = {
+        categoryUid: document.getElementById('categoryUid').value,
         title: document.getElementById('title').value.trim(),
-        description: document.getElementById('description').value.trim(),
-        category: document.getElementById('category').value.trim(),
-        timeLimitMinutes: Number(document.getElementById('timeLimit').value) || null,
-        questionIds
+        description: document.getElementById('description').value.trim() || null,
+        timeLimitSeconds: minutes > 0 ? minutes * 60 : null,
+        maxAttempts: maxAttemptsRaw ? Number(maxAttemptsRaw) : null,
+        passingScore: Number(document.getElementById('passingScore').value),
+        isPublic: document.getElementById('isPublic').checked,
+        questions
       };
 
+      const btn = document.getElementById('submit-btn');
+      btn.disabled = true;
+
       try {
-        if (testId) {
-          await apiRequest('creation', `/api/tests/${testId}`, { method: 'PUT', body: payload });
+        if (testUid) {
+          await apiRequest('creation', `/api/tests/${testUid}`, { method: 'PUT', body: payload });
         } else {
           await apiRequest('creation', '/api/tests', { method: 'POST', body: payload });
         }
         window.location.href = 'tests.html';
       } catch (err) {
         showAlert('alert', err.message);
+      } finally {
+        btn.disabled = false;
       }
     });
 

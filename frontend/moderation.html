@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <title>Модерация тестов — KnowledgeControl</title>
+  <title>Модерация — KnowledgeControl</title>
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -10,23 +10,65 @@
   <main class="container">
     <div class="page-header">
       <div>
-        <h1>Очередь модерации</h1>
-        <p class="page-subtitle">Проверка и публикация тестов перед попаданием в общий каталог</p>
+        <h1>Панель модерации</h1>
+        <p class="page-subtitle">Скрытие нарушающих правила тестов и управление блокировками пользователей</p>
       </div>
     </div>
 
     <div id="alert" class="alert"></div>
+
+    <div class="grid-2">
+      <form id="hide-test-form" class="card">
+        <h3 style="margin:0 0 12px;font-size:16px;">Скрыть тест по UID</h3>
+        <div class="form-group">
+          <label for="hideTestUid">UID теста</label>
+          <input type="text" id="hideTestUid" placeholder="00000000-0000-0000-0000-000000000000" required>
+        </div>
+        <div class="form-group">
+          <label for="hideComment">Комментарий модератора (необязательно)</label>
+          <input type="text" id="hideComment" maxlength="1000" placeholder="Причина скрытия теста">
+        </div>
+        <button type="submit" class="btn btn-danger btn-sm">Скрыть тест</button>
+      </form>
+
+      <div class="card">
+        <h3 style="margin:0 0 12px;font-size:16px;">Блокировка / разблокировка пользователя</h3>
+        <form id="ban-form">
+          <div class="form-group">
+            <label for="banUserUid">UID пользователя</label>
+            <input type="text" id="banUserUid" placeholder="00000000-0000-0000-0000-000000000000" required>
+          </div>
+          <div class="form-group">
+            <label for="banReason">Причина блокировки</label>
+            <input type="text" id="banReason" maxlength="500" placeholder="Нарушение правил платформы" required>
+          </div>
+          <div class="form-group">
+            <label for="banExpiresAt">Действует до (оставьте пустым для бессрочного бана)</label>
+            <input type="datetime-local" id="banExpiresAt">
+          </div>
+          <div class="row-actions">
+            <button type="submit" class="btn btn-danger btn-sm">Заблокировать</button>
+            <button type="button" class="btn btn-sm" onclick="unbanUser()">Снять блокировку</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <h2 style="font-size:17px;margin:24px 0 12px;">Опубликованные тесты в каталоге</h2>
     <div class="table-wrap">
       <table>
         <thead>
           <tr>
             <th>Название теста</th>
             <th>Категория</th>
-            <th>Автор</th>
-            <th>Решение</th>
+            <th>Author UID</th>
+            <th>Test UID</th>
+            <th></th>
           </tr>
         </thead>
-        <tbody id="mod-body"></tbody>
+        <tbody id="catalog-mod-body">
+          <tr><td colspan="5" class="muted">Загрузка...</td></tr>
+        </tbody>
       </table>
     </div>
   </main>
@@ -34,28 +76,31 @@
   <script src="js/api.js"></script>
   <script src="js/auth.js"></script>
   <script>
-    requireAuth();
+    requireModerator();
     renderNavbar('moderation');
 
-    async function loadPending() {
+    async function loadCatalogForModeration() {
       try {
-        const data = await apiRequest('creation', '/api/moderation/pending');
-        const list = Array.isArray(data) ? data : (data.items || []);
-        const tbody = document.getElementById('mod-body');
+        const data = await apiRequest('search', '/api/catalog?page=1&size=50');
+        const list = data?.items || [];
+        const tbody = document.getElementById('catalog-mod-body');
 
         if (!list.length) {
-          tbody.innerHTML = '<tr><td colspan="4" class="muted">Очередь модерации пуста.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="5" class="muted">В каталоге пока нет опубликованных тестов.</td></tr>';
           return;
         }
 
         tbody.innerHTML = list.map(t => `
           <tr>
-            <td><strong>${t.title}</strong><div class="muted">${t.description || ''}</div></td>
-            <td><span class="badge">${t.category || 'Общее'}</span></td>
-            <td class="mono">${t.authorEmail || t.authorId || '—'}</td>
-            <td class="row-actions">
-              <button class="btn btn-sm btn-primary" onclick="moderate('${t.id}', 'approve')">Опубликовать</button>
-              <button class="btn btn-sm btn-danger" onclick="moderate('${t.id}', 'reject')">Отклонить</button>
+            <td>
+              <strong>${escapeHtml(t.title)}</strong>
+              <div class="muted">${escapeHtml(t.description || '')}</div>
+            </td>
+            <td><span class="badge">${escapeHtml(t.subject || 'Общее')}</span></td>
+            <td class="mono" style="font-size:12px;">${t.authorUid}</td>
+            <td class="mono" style="font-size:12px;">${t.testUid}</td>
+            <td style="text-align:right;">
+              <button class="btn btn-sm btn-danger" onclick="hideTestByUid('${t.testUid}')">Скрыть</button>
             </td>
           </tr>
         `).join('');
@@ -64,21 +109,74 @@
       }
     }
 
-    async function moderate(id, action) {
-      const reason = action === 'reject' ? (prompt('Причина отклонения:') || 'Требуется доработка') : null;
+    async function hideTestByUid(testUid, presetComment = null) {
+      const comment = presetComment !== null
+        ? presetComment
+        : prompt('Комментарий модератора (можно оставить пустым):', 'Нарушение правил платформы');
+
+      if (comment === null) return;
+      hideAlert('alert');
+
       try {
-        await apiRequest('creation', `/api/moderation/${id}/${action}`, {
-          method: 'POST',
-          body: reason ? { reason } : undefined
+        const query = comment.trim() ? `?comment=${encodeURIComponent(comment.trim())}` : '';
+        await apiRequest('creation', `/api/moderation/hide/${encodeURIComponent(testUid)}${query}`, {
+          method: 'POST'
         });
-        showAlert('alert', action === 'approve' ? 'Тест опубликован.' : 'Тест отклонён.', 'success');
-        loadPending();
+        showAlert('alert', `Тест ${testUid} скрыт и заблокирован.`, 'success');
+        loadCatalogForModeration();
       } catch (err) {
         showAlert('alert', err.message);
       }
     }
 
-    loadPending();
+    document.getElementById('hide-test-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const uid = document.getElementById('hideTestUid').value.trim();
+      const comment = document.getElementById('hideComment').value;
+      await hideTestByUid(uid, comment);
+      document.getElementById('hide-test-form').reset();
+    });
+
+    document.getElementById('ban-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      hideAlert('alert');
+
+      const userUid = document.getElementById('banUserUid').value.trim();
+      const reason = document.getElementById('banReason').value.trim();
+      const expiresRaw = document.getElementById('banExpiresAt').value;
+      const expiresAt = expiresRaw ? new Date(expiresRaw).toISOString() : null;
+
+      try {
+        await apiRequest('user', '/api/bans/ban', {
+          method: 'POST',
+          body: { userUid, reason, expiresAt }
+        });
+        document.getElementById('ban-form').reset();
+        showAlert('alert', `Пользователь ${userUid} заблокирован.`, 'success');
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    });
+
+    async function unbanUser() {
+      const userUid = document.getElementById('banUserUid').value.trim();
+      if (!userUid) {
+        showAlert('alert', 'Укажите UID пользователя для разблокировки.');
+        return;
+      }
+      hideAlert('alert');
+
+      try {
+        await apiRequest('user', `/api/bans/unban/${encodeURIComponent(userUid)}`, {
+          method: 'POST'
+        });
+        showAlert('alert', `Блокировка с пользователя ${userUid} снята.`, 'success');
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+
+    loadCatalogForModeration();
   </script>
 </body>
 </html>

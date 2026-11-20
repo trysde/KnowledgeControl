@@ -11,24 +11,36 @@
     <div class="page-header">
       <div>
         <h1 id="test-title">Статистика теста</h1>
-        <p class="page-subtitle">Агрегированные показатели из SearchService</p>
+        <p class="page-subtitle" id="last-attempt-meta">Агрегированные показатели прохождений</p>
       </div>
       <a href="tests.html" class="btn">Назад</a>
     </div>
 
     <div id="alert" class="alert"></div>
+
     <div class="grid-3">
       <div class="card">
-        <div class="muted">Всего прохождений</div>
+        <div class="muted">Всего попыток</div>
         <div id="stat-attempts" class="mono" style="font-size:26px;font-weight:700;margin-top:4px;">—</div>
       </div>
       <div class="card">
-        <div class="muted">Средний балл</div>
-        <div id="stat-avg" class="mono" style="font-size:26px;font-weight:700;margin-top:4px;">—</div>
+        <div class="muted">Успешных прохождений</div>
+        <div id="stat-passed" class="mono" style="font-size:26px;font-weight:700;margin-top:4px;">—</div>
       </div>
       <div class="card">
-        <div class="muted">Процент успешных</div>
-        <div id="stat-pass" class="mono" style="font-size:26px;font-weight:700;margin-top:4px;">—</div>
+        <div class="muted">Процент сдачи (Pass Rate)</div>
+        <div id="stat-pass-rate" class="mono" style="font-size:26px;font-weight:700;margin-top:4px;">—</div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="muted">Средний результат</div>
+        <div id="stat-avg-score" class="mono" style="font-size:24px;font-weight:700;margin-top:4px;">—</div>
+      </div>
+      <div class="card">
+        <div class="muted">Последняя попытка</div>
+        <div id="stat-last-date" class="mono" style="font-size:18px;font-weight:600;margin-top:8px;">—</div>
       </div>
     </div>
   </main>
@@ -41,17 +53,43 @@
     const testUid = new URLSearchParams(window.location.search).get('testUid');
 
     async function loadStats() {
-      if (!testUid) return showAlert('alert', 'Не указан идентификатор теста.');
+      if (!testUid) {
+        showAlert('alert', 'Не указан идентификатор теста.');
+        return;
+      }
+
+      // Параллельно пробуем получить название теста для заголовка
+      apiRequest('creation', `/api/tests/${testUid}`)
+        .then(test => {
+          if (test?.title) {
+            document.getElementById('test-title').textContent = `Статистика: ${test.title}`;
+          }
+        })
+        .catch(() => {});
+
       try {
-        const stats = await apiRequest('search', `/api/tests/${testUid}/stats`);
-        if (stats.title) document.getElementById('test-title').textContent = `Статистика: ${stats.title}`;
-        document.getElementById('stat-attempts').textContent = stats.attemptsCount ?? stats.totalAttempts ?? 0;
-        document.getElementById('stat-avg').textContent = stats.averageScore != null ? Number(stats.averageScore).toFixed(1) : '—';
-        document.getElementById('stat-pass').textContent = stats.passRate != null ? `${Math.round(stats.passRate)}%` : '—';
+        const stats = await apiRequest('search', `/api/stats/${testUid}`);
+        document.getElementById('stat-attempts').textContent = stats.totalAttempts ?? 0;
+        document.getElementById('stat-passed').textContent = stats.passedAttempts ?? 0;
+        document.getElementById('stat-pass-rate').textContent = `${Number(stats.passRate ?? 0).toFixed(1)}%`;
+        document.getElementById('stat-avg-score').textContent = `${Number(stats.avgScore ?? 0).toFixed(1)}%`;
+        document.getElementById('stat-last-date').textContent = stats.lastAttemptAt
+          ? new Date(stats.lastAttemptAt).toLocaleString('ru-RU')
+          : 'Ещё не проходили';
       } catch (err) {
-        showAlert('alert', err.message);
+        if (err.message.includes('не найдена')) {
+          document.getElementById('stat-attempts').textContent = '0';
+          document.getElementById('stat-passed').textContent = '0';
+          document.getElementById('stat-pass-rate').textContent = '0%';
+          document.getElementById('stat-avg-score').textContent = '—';
+          document.getElementById('stat-last-date').textContent = 'Нет завершённых попыток';
+          showAlert('alert', 'По этому тесту ещё нет завершённых попыток.', 'success');
+        } else {
+          showAlert('alert', err.message);
+        }
       }
     }
+
     loadStats();
   </script>
 </body>

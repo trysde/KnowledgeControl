@@ -1,4 +1,6 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using System.Security.Cryptography;
+using System.Text;
+using Microsoft.EntityFrameworkCore;
 using NpgsqlTypes;
 using SearchService.Contracts.Catalog;
 using SearchService.Contracts.Common;
@@ -13,7 +15,7 @@ public class SearchService(
     SearchDbContext dbContext,
     ISearchCache searchCache) : ISearchService
 {
-    private static readonly TimeSpan SearchCacheTtl = TimeSpan.FromMinutes(3);
+    private static readonly TimeSpan SearchCacheTtl = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan CatalogCacheTtl = TimeSpan.FromMinutes(5);
 
     public async Task<PagedResponse<SearchResponse>> SearchAsync(
@@ -28,7 +30,9 @@ public class SearchService(
             : request.Sort.Trim().ToLowerInvariant();
 
         var version = await searchCache.GetVersionAsync(cancellationToken);
-        var cacheKey = $"v{version}:search:q={normalizedQuery}:cat={normalizedCategory}:tag={normalizedTag}:author={request.Author}:sort={normalizedSort}:p={request.Page}:s={request.Size}";
+        var rawQueryKey = $"q={normalizedQuery}|cat={normalizedCategory}|tag={normalizedTag}|author={request.Author}|sort={normalizedSort}|p={request.Page}|s={request.Size}";
+        var queryHash = ComputeQueryHash(rawQueryKey);
+        var cacheKey = $"v{version}:search:cache:{queryHash}";
 
         var cached = await searchCache.GetAsync<PagedResponse<SearchResponse>>(cacheKey, cancellationToken);
         if (cached is not null)
@@ -134,7 +138,7 @@ public class SearchService(
     {
         var normalizedCategory = string.IsNullOrWhiteSpace(category) ? null : category.Trim();
         var version = await searchCache.GetVersionAsync(cancellationToken);
-        var cacheKey = $"v{version}:catalog:cat={normalizedCategory}:p={page}:s={size}";
+        var cacheKey = $"v{version}:catalog:all:cat={normalizedCategory}:p={page}:s={size}";
 
         var cached = await searchCache.GetAsync<PagedResponse<CatalogItemResponse>>(cacheKey, cancellationToken);
         if (cached is not null)
@@ -181,7 +185,7 @@ public class SearchService(
     {
         var clampedLimit = Math.Clamp(limit, 1, 50);
         var version = await searchCache.GetVersionAsync(cancellationToken);
-        var cacheKey = $"v{version}:catalog:popular:l={clampedLimit}";
+        var cacheKey = $"v{version}:catalog:popular:{clampedLimit}";
 
         var cached = await searchCache.GetAsync<List<CatalogItemResponse>>(cacheKey, cancellationToken);
         if (cached is not null)
@@ -215,7 +219,7 @@ public class SearchService(
     {
         var clampedLimit = Math.Clamp(limit, 1, 50);
         var version = await searchCache.GetVersionAsync(cancellationToken);
-        var cacheKey = $"v{version}:catalog:new:l={clampedLimit}";
+        var cacheKey = $"v{version}:catalog:new:{clampedLimit}";
 
         var cached = await searchCache.GetAsync<List<CatalogItemResponse>>(cacheKey, cancellationToken);
         if (cached is not null)
@@ -240,6 +244,12 @@ public class SearchService(
         var items = rows.Select(MapToCatalogItem).ToList();
         await searchCache.SetAsync(cacheKey, items, CatalogCacheTtl, cancellationToken);
         return items;
+    }
+
+    private static string ComputeQueryHash(string input)
+    {
+        var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
+        return Convert.ToHexString(hashBytes)[..16].ToLowerInvariant();
     }
 
     private static CatalogItemResponse MapToCatalogItem(CatalogProjection row) =>

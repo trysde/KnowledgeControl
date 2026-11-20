@@ -86,6 +86,20 @@ public class TestsController(
         return Ok(response);
     }
 
+    [HttpGet("{uid:guid}")]
+    [ProducesResponseType(typeof(TestDetailResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<TestDetailResponse>> GetById(
+        [FromRoute] Guid uid,
+        CancellationToken cancellationToken)
+    {
+        var authorUid = GetCurrentUserUid();
+        var response = await testService.GetByIdAsync(uid, authorUid, cancellationToken);
+        return Ok(response);
+    }
+
     [HttpGet("{uid:guid}/snapshot")]
     [AllowAnonymous]
     [ProducesResponseType(typeof(TestSnapshotResponse), StatusCodes.Status200OK)]

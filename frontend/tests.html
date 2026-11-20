@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Мои тесты — KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container">
+    <div class="page-header">
+      <div>
+        <h1>Мои тесты</h1>
+        <p class="page-subtitle">Управление черновиками, отправка на модерацию и публикация</p>
+      </div>
+      <a href="test-edit.html" class="btn btn-primary">+ Создать тест</a>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Название</th>
+            <th>Статус</th>
+            <th>Вопросов</th>
+            <th>Действия</th>
+          </tr>
+        </thead>
+        <tbody id="tests-body"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    requireAuth();
+    renderNavbar('tests');
+
+    function statusBadge(status) {
+      if (status === 'Published') return '<span class="badge badge-success">Published</span>';
+      if (status === 'PendingModeration' || status === 'OnModeration') return '<span class="badge badge-warn">На модерации</span>';
+      if (status === 'Rejected') return '<span class="badge badge-danger">Отклонён</span>';
+      return `<span class="badge">${status || 'Draft'}</span>`;
+    }
+
+    async function loadMyTests() {
+      try {
+        const data = await apiRequest('creation', '/api/tests/my');
+        const list = Array.isArray(data) ? data : (data.items || []);
+        const tbody = document.getElementById('tests-body');
+
+        if (!list.length) {
+          tbody.innerHTML = '<tr><td colspan="4" class="muted">У вас пока нет созданных тестов.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = list.map(t => `
+          <tr>
+            <td><strong>${t.title}</strong><div class="muted">${t.category || ''}</div></td>
+            <td>${statusBadge(t.status)}</td>
+            <td class="mono">${t.questionsCount ?? (t.questionIds ? t.questionIds.length : '—')}</td>
+            <td class="row-actions">
+              <a href="test-edit.html?id=${t.id}" class="btn btn-sm">Редактировать</a>
+              <a href="test-stats.html?testUid=${t.uid || t.id}" class="btn btn-sm">Статистика</a>
+              ${t.status !== 'Published' ? `<button class="btn btn-sm btn-primary" onclick="submitModeration('${t.id}')">На модерацию</button>` : ''}
+            </td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+
+    async function submitModeration(id) {
+      try {
+        await apiRequest('creation', `/api/tests/${id}/submit`, { method: 'POST' });
+        showAlert('alert', 'Тест отправлен на модерацию.', 'success');
+        loadMyTests();
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+
+    loadMyTests();
+  </script>
+</body>
+</html>

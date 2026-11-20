@@ -164,8 +164,24 @@ public class QuestionService(TestCreationDbContext dbContext) : IQuestionService
             }
         }
 
-        question.QuestionTags.Clear();
-        await AttachTagsAsync(question, request.Tags, cancellationToken);
+        var normalizedNames = request.Tags
+            .Select(t => t.Trim().ToLowerInvariant())
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Distinct()
+            .ToHashSet();
+
+        var toRemove = question.QuestionTags
+            .Where(qt => !normalizedNames.Contains(qt.Tag.Name.ToLowerInvariant()))
+            .ToList();
+        foreach (var qt in toRemove)
+            question.QuestionTags.Remove(qt);
+
+        var existingNames = question.QuestionTags
+            .Select(qt => qt.Tag.Name.ToLowerInvariant())
+            .ToHashSet();
+        var namesToAdd = normalizedNames.Where(n => !existingNames.Contains(n)).ToList();
+        if (namesToAdd.Count > 0)
+            await AttachTagsAsync(question, namesToAdd, cancellationToken);
 
         await dbContext.SaveChangesAsync(cancellationToken);
 

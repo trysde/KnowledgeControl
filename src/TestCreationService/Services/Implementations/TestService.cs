@@ -114,23 +114,39 @@ public class TestService(
         test.IsPublic = request.IsPublic;
         test.UpdatedAt = now;
 
-        dbContext.TestQuestions.RemoveRange(test.TestQuestions);
-        test.TestQuestions.Clear();
+        var existingByQuestionId = test.TestQuestions.ToDictionary(tq => tq.QuestionId);
+        var requestedQuestionIds = request.Questions
+            .Select(i => questionsByUid[i.QuestionUid].Id)
+            .ToHashSet();
+
+        var toRemove = test.TestQuestions
+            .Where(tq => !requestedQuestionIds.Contains(tq.QuestionId))
+            .ToList();
+        dbContext.TestQuestions.RemoveRange(toRemove);
 
         foreach (var item in request.Questions.OrderBy(q => q.OrderIndex))
         {
             var question = questionsByUid[item.QuestionUid];
             var snapshotJson = BuildQuestionSnapshotJson(question, item.OrderIndex, item.Points);
 
-            test.TestQuestions.Add(new TestQuestion
+            if (existingByQuestionId.TryGetValue(question.Id, out var existingTq))
             {
-                TestId = test.Id,
-                QuestionId = question.Id,
-                Question = question,
-                OrderIndex = item.OrderIndex,
-                Points = item.Points,
-                Snapshot = snapshotJson
-            });
+                existingTq.OrderIndex = item.OrderIndex;
+                existingTq.Points = item.Points;
+                existingTq.Snapshot = snapshotJson;
+            }
+            else
+            {
+                test.TestQuestions.Add(new TestQuestion
+                {
+                    TestId = test.Id,
+                    QuestionId = question.Id,
+                    Question = question,
+                    OrderIndex = item.OrderIndex,
+                    Points = item.Points,
+                    Snapshot = snapshotJson
+                });
+            }
         }
 
         await dbContext.SaveChangesAsync(cancellationToken);
@@ -267,6 +283,45 @@ public class TestService(
             .ToListAsync(cancellationToken);
 
         return tests.Select(MapToResponse).ToList();
+    }
+
+    public async Task<TestDetailResponse> GetByIdAsync(
+        Guid testUid,
+        Guid authorUid,
+        CancellationToken cancellationToken = default)
+    {
+        var test = await dbContext.Tests
+            .AsNoTracking()
+            .Include(t => t.Category)
+            .Include(t => t.TestQuestions)
+                .ThenInclude(tq => tq.Question)
+            .FirstOrDefaultAsync(t => t.Uid == testUid, cancellationToken)
+            ?? throw new NotFoundException($"Тест с Uid {testUid} не найден.");
+
+        if (test.AuthorUid != authorUid)
+        {
+            throw new ForbiddenException("Просматривать детали теста для редактирования может только его автор.");
+        }
+
+        var questions = test.TestQuestions
+            .OrderBy(tq => tq.OrderIndex)
+            .Select(tq => new TestQuestionItemResponse(
+                QuestionUid: tq.Question.Uid,
+                OrderIndex: tq.OrderIndex,
+                Points: tq.Points))
+            .ToList();
+
+        return new TestDetailResponse(
+            Uid: test.Uid,
+            CategoryUid: test.Category.Uid,
+            Title: test.Title,
+            Description: test.Description,
+            TimeLimitSeconds: test.TimeLimitSeconds,
+            MaxAttempts: test.MaxAttempts,
+            PassingScore: test.PassingScore,
+            IsPublic: test.IsPublic,
+            Status: test.Status.ToString(),
+            Questions: questions);
     }
 
     public async Task<TestSnapshotResponse> GetSnapshotAsync(

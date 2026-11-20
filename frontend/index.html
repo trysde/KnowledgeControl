@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Каталог тестов — KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container">
+    <div class="page-header">
+      <div>
+        <h1>Каталог тестов</h1>
+        <p class="page-subtitle">Опубликованные проверочные материалы</p>
+      </div>
+      <a href="search.html" class="btn">Расширенный поиск</a>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <div id="tests-grid" class="grid-2"></div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    renderNavbar('index');
+
+    async function loadCatalog() {
+      try {
+        const data = await apiRequest('search', '/api/tests');
+        const items = Array.isArray(data) ? data : (data.items || []);
+        const grid = document.getElementById('tests-grid');
+
+        if (!items.length) {
+          grid.innerHTML = '<p class="muted">Опубликованных тестов пока нет.</p>';
+          return;
+        }
+
+        grid.innerHTML = items.map(t => `
+          <div class="card" style="display:flex;flex-direction:column;justify-content:space-between;">
+            <div>
+              <div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:8px;">
+                <span class="badge">${t.category || 'Общее'}</span>
+                <span class="mono muted">${t.timeLimitMinutes ? t.timeLimitMinutes + ' мин' : 'Без таймера'}</span>
+              </div>
+              <h3 style="margin:0 0 6px;font-size:17px;">${t.title}</h3>
+              <p class="muted" style="margin:0 0 14px;">${t.description || 'Описание отсутствует'}</p>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;padding-top:12px;border-top:1px solid var(--border);">
+              <span class="muted">Вопросов: <strong>${t.questionsCount ?? '—'}</strong> · Попыток: ${t.attemptsCount ?? 0}</span>
+              <a href="take-test.html?testUid=${t.uid || t.id}" class="btn btn-sm btn-primary">Пройти</a>
+            </div>
+          </div>
+        `).join('');
+      } catch (e) {
+        showAlert('alert', e.message);
+      }
+    }
+    loadCatalog();
+  </script>
+</body>
+</html>

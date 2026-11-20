@@ -56,6 +56,16 @@ public static class CommonServiceExtensions
             });
         });
 
+        services.AddCors(options =>
+        {
+            options.AddPolicy("AllowFrontend", policy =>
+            {
+                policy.WithOrigins("http://localhost:8080", "http://127.0.0.1:8080")
+                      .AllowAnyHeader()
+                      .AllowAnyMethod();
+            });
+        });
+
         return services;
     }
 
@@ -86,6 +96,8 @@ public static class CommonServiceExtensions
 
     public static IApplicationBuilder UseCommonMiddleware(this IApplicationBuilder app, IWebHostEnvironment env)
     {
+        app.UseCors("AllowFrontend");
+
         app.UseMiddleware<ExceptionHandlingMiddleware>();
 
         if (env.IsDevelopment())

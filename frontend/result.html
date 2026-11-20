@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Результат попытки — KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container" style="max-width:720px;">
+    <div class="page-header">
+      <div>
+        <h1 id="test-title">Результат тестирования</h1>
+        <p class="page-subtitle" id="attempt-meta"></p>
+      </div>
+      <a href="index.html" class="btn">В каталог</a>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <div class="card">
+      <div class="muted">Набранный балл</div>
+      <div id="score-box" class="mono" style="font-size:32px;font-weight:700;margin:6px 0;">—</div>
+      <div id="percent-box" class="muted"></div>
+    </div>
+
+    <div id="details-list"></div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    requireAuth();
+    renderNavbar();
+    const attemptId = new URLSearchParams(window.location.search).get('attemptId');
+
+    async function loadResult() {
+      if (!attemptId) return showAlert('alert', 'Не указан attemptId.');
+      try {
+        const res = await apiRequest('taking', `/api/attempts/${attemptId}`);
+        document.getElementById('test-title').textContent = res.testTitle || 'Результат тестирования';
+        document.getElementById('score-box').textContent = `${res.score ?? 0} / ${res.maxScore ?? 0}`;
+        const pct = res.maxScore ? Math.round((res.score / res.maxScore) * 100) : 0;
+        document.getElementById('percent-box').textContent = `Выполнено: ${pct}%`;
+
+        if (Array.isArray(res.answers)) {
+          document.getElementById('details-list').innerHTML = res.answers.map((a, i) => `
+            <div class="card" style="display:flex;justify-content:space-between;align-items:center;">
+              <span>Вопрос #${i + 1}</span>
+              <span class="badge ${a.isCorrect ? 'badge-success' : 'badge-danger'}">
+                ${a.isCorrect ? 'Верно' : 'Неверно'} (${a.earnedPoints ?? 0} б.)
+              </span>
+            </div>
+          `).join('');
+        }
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+    loadResult();
+  </script>
+</body>
+</html>

@@ -9,5 +9,6 @@ public interface ITestService
     Task<PublishTestResponse> PublishAsync(Guid testUid, Guid authorUid, CancellationToken cancellationToken = default);
     Task UnpublishAsync(Guid testUid, Guid authorUid, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<TestResponse>> GetMyAsync(Guid authorUid, CancellationToken cancellationToken = default);
+    Task<TestDetailResponse> GetByIdAsync(Guid testUid, Guid authorUid, CancellationToken cancellationToken = default);
     Task<TestSnapshotResponse> GetSnapshotAsync(Guid testUid, bool includeCorrectAnswers = true, CancellationToken cancellationToken = default);
 }

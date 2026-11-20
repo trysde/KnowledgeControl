@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Прохождение теста — KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container" style="max-width:780px;">
+    <div class="page-header">
+      <div>
+        <h1 id="test-title">Загрузка теста...</h1>
+        <p class="page-subtitle" id="test-meta"></p>
+      </div>
+      <div id="timer" class="badge mono" style="font-size:14px;padding:6px 10px;"></div>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <form id="attempt-form">
+      <div id="questions-container"></div>
+      <button type="submit" id="submit-btn" class="btn btn-primary" style="display:none;">Завершить и отправить ответы</button>
+    </form>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    requireAuth();
+    renderNavbar();
+    const testUid = new URLSearchParams(window.location.search).get('testUid');
+    let attemptId = null;
+    let questions = [];
+
+    async function startAttempt() {
+      if (!testUid) return showAlert('alert', 'Не указан testUid в URL.');
+      try {
+        const data = await apiRequest('taking', '/api/attempts/start', {
+          method: 'POST',
+          body: { testUid }
+        });
+
+        attemptId = data.attemptId || data.id;
+        questions = data.questions || [];
+        document.getElementById('test-title').textContent = data.testTitle || 'Тестирование';
+        document.getElementById('test-meta').textContent = `Вопросов: ${questions.length}`;
+
+        if (data.expiresAt) startTimer(new Date(data.expiresAt));
+
+        const container = document.getElementById('questions-container');
+        container.innerHTML = questions.map((q, idx) => `
+          <div class="card">
+            <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+              <strong>Вопрос ${idx + 1}</strong>
+              <span class="mono muted">${q.points ?? 1} б.</span>
+            </div>
+            <p style="margin:0 0 12px;">${q.text}</p>
+            ${renderInputs(q)}
+          </div>
+        `).join('');
+
+        document.getElementById('submit-btn').style.display = 'inline-flex';
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+
+    function renderInputs(q) {
+      if (q.type === 'Text') {
+        return `<input type="text" name="q_${q.id}" placeholder="Введите ответ...">`;
+      }
+      const inputType = q.type === 'MultipleChoice' ? 'checkbox' : 'radio';
+      return (q.options || []).map(o => `
+        <label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-weight:400;cursor:pointer;">
+          <input type="${inputType}" name="q_${q.id}" value="${o.id}">
+          <span>${o.text}</span>
+        </label>
+      `).join('');
+    }
+
+    function startTimer(expiresAt) {
+      const el = document.getElementById('timer');
+      const tick = () => {
+        const diff = Math.max(0, Math.floor((expiresAt - Date.now()) / 1000));
+        const m = String(Math.floor(diff / 60)).padStart(2, '0');
+        const s = String(diff % 60).padStart(2, '0');
+        el.textContent = `Осталось: ${m}:${s}`;
+        if (diff === 0) document.getElementById('attempt-form').requestSubmit();
+      };
+      tick();
+      setInterval(tick, 1000);
+    }
+
+    document.getElementById('attempt-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const answers = questions.map(q => {
+        if (q.type === 'Text') {
+          const val = document.querySelector(`input[name="q_${q.id}"]`)?.value || '';
+          return { questionId: q.id, textAnswer: val.trim(), selectedOptionIds: [] };
+        }
+        const checked = Array.from(document.querySelectorAll(`input[name="q_${q.id}"]:checked`)).map(i => i.value);
+        return { questionId: q.id, selectedOptionIds: checked, textAnswer: null };
+      });
+
+      try {
+        await apiRequest('taking', `/api/attempts/${attemptId}/submit`, {
+          method: 'POST',
+          body: { answers }
+        });
+        window.location.href = `result.html?attemptId=${attemptId}`;
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    });
+
+    startAttempt();
+  </script>
+</body>
+</html>

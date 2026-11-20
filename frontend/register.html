@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Регистрация — KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container container-narrow">
+    <div class="page-header">
+      <div>
+        <h1>Регистрация</h1>
+        <p class="page-subtitle">Создание нового аккаунта в KnowledgeControl</p>
+      </div>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <form id="register-form" class="card">
+      <div class="form-group">
+        <label for="fullName">Имя и фамилия</label>
+        <input type="text" id="fullName" required>
+      </div>
+      <div class="form-group">
+        <label for="email">Email</label>
+        <input type="email" id="email" required>
+      </div>
+      <div class="form-group">
+        <label for="password">Пароль</label>
+        <input type="password" id="password" minlength="6" required>
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%;">Создать аккаунт</button>
+      <p class="muted" style="margin:14px 0 0;text-align:center;">
+        Уже есть аккаунт? <a href="login.html">Войти</a>
+      </p>
+    </form>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    renderNavbar();
+    document.getElementById('register-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        const res = await apiRequest('user', '/api/auth/register', {
+          method: 'POST',
+          body: {
+            fullName: document.getElementById('fullName').value.trim(),
+            email: document.getElementById('email').value.trim(),
+            password: document.getElementById('password').value
+          }
+        });
+        if (res && (res.token || res.accessToken)) {
+          localStorage.setItem('kc_token', res.token || res.accessToken);
+          window.location.href = 'index.html';
+        } else {
+          window.location.href = 'login.html';
+        }
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    });
+  </script>
+</body>
+</html>

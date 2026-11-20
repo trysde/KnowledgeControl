@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Конструктор теста — KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container" style="max-width:780px;">
+    <div class="page-header">
+      <div>
+        <h1 id="page-title">Создание теста</h1>
+        <p class="page-subtitle">Метаданные теста и выбор вопросов из банка</p>
+      </div>
+      <a href="tests.html" class="btn">К моим тестам</a>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <form id="test-form" class="card">
+      <div class="form-group">
+        <label for="title">Название теста</label>
+        <input type="text" id="title" required>
+      </div>
+      <div class="form-group">
+        <label for="description">Описание</label>
+        <textarea id="description"></textarea>
+      </div>
+      <div class="grid-2">
+        <div class="form-group">
+          <label for="category">Категория</label>
+          <input type="text" id="category" placeholder="Например: Базы данных">
+        </div>
+        <div class="form-group">
+          <label for="timeLimit">Ограничение по времени (минут, 0 — без лимита)</label>
+          <input type="number" id="timeLimit" value="15" min="0">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Выберите вопросы для теста</label>
+        <div id="questions-checklist" style="border:1px solid var(--border);border-radius:var(--radius);padding:10px;max-height:260px;overflow-y:auto;">
+          <span class="muted">Загрузка списка вопросов...</span>
+        </div>
+      </div>
+
+      <div style="margin-top:18px;display:flex;gap:10px;">
+        <button type="submit" class="btn btn-primary">Сохранить тест</button>
+        <a href="tests.html" class="btn">Отмена</a>
+      </div>
+    </form>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    requireAuth();
+    renderNavbar('tests');
+    const testId = new URLSearchParams(window.location.search).get('id');
+
+    async function init() {
+      try {
+        const qData = await apiRequest('creation', '/api/questions');
+        const allQuestions = Array.isArray(qData) ? qData : (qData.items || []);
+        let selectedIds = new Set();
+
+        if (testId) {
+          document.getElementById('page-title').textContent = 'Редактирование теста';
+          const test = await apiRequest('creation', `/api/tests/${testId}`);
+          document.getElementById('title').value = test.title || '';
+          document.getElementById('description').value = test.description || '';
+          document.getElementById('category').value = test.category || '';
+          document.getElementById('timeLimit').value = test.timeLimitMinutes ?? 0;
+          selectedIds = new Set(test.questionIds || (test.questions || []).map(q => q.id));
+        }
+
+        const box = document.getElementById('questions-checklist');
+        if (!allQuestions.length) {
+          box.innerHTML = '<span class="muted">Сначала добавьте вопросы в разделе «Вопросы».</span>';
+          return;
+        }
+
+        box.innerHTML = allQuestions.map(q => `
+          <label style="display:flex;align-items:flex-start;gap:8px;padding:6px 4px;border-bottom:1px solid var(--border);font-weight:400;cursor:pointer;">
+            <input type="checkbox" name="qIds" value="${q.id}" ${selectedIds.has(q.id) ? 'checked' : ''} style="margin-top:3px;">
+            <span>${q.text} <span class="badge">${q.points ?? 1} б.</span></span>
+          </label>
+        `).join('');
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+
+    document.getElementById('test-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const questionIds = Array.from(document.querySelectorAll('input[name="qIds"]:checked')).map(cb => cb.value);
+      const payload = {
+        title: document.getElementById('title').value.trim(),
+        description: document.getElementById('description').value.trim(),
+        category: document.getElementById('category').value.trim(),
+        timeLimitMinutes: Number(document.getElementById('timeLimit').value) || null,
+        questionIds
+      };
+
+      try {
+        if (testId) {
+          await apiRequest('creation', `/api/tests/${testId}`, { method: 'PUT', body: payload });
+        } else {
+          await apiRequest('creation', '/api/tests', { method: 'POST', body: payload });
+        }
+        window.location.href = 'tests.html';
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    });
+
+    init();
+  </script>
+</body>
+</html>

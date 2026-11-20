@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Модерация тестов — KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container">
+    <div class="page-header">
+      <div>
+        <h1>Очередь модерации</h1>
+        <p class="page-subtitle">Проверка и публикация тестов перед попаданием в общий каталог</p>
+      </div>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Название теста</th>
+            <th>Категория</th>
+            <th>Автор</th>
+            <th>Решение</th>
+          </tr>
+        </thead>
+        <tbody id="mod-body"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    requireAuth();
+    renderNavbar('moderation');
+
+    async function loadPending() {
+      try {
+        const data = await apiRequest('creation', '/api/moderation/pending');
+        const list = Array.isArray(data) ? data : (data.items || []);
+        const tbody = document.getElementById('mod-body');
+
+        if (!list.length) {
+          tbody.innerHTML = '<tr><td colspan="4" class="muted">Очередь модерации пуста.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = list.map(t => `
+          <tr>
+            <td><strong>${t.title}</strong><div class="muted">${t.description || ''}</div></td>
+            <td><span class="badge">${t.category || 'Общее'}</span></td>
+            <td class="mono">${t.authorEmail || t.authorId || '—'}</td>
+            <td class="row-actions">
+              <button class="btn btn-sm btn-primary" onclick="moderate('${t.id}', 'approve')">Опубликовать</button>
+              <button class="btn btn-sm btn-danger" onclick="moderate('${t.id}', 'reject')">Отклонить</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+
+    async function moderate(id, action) {
+      const reason = action === 'reject' ? (prompt('Причина отклонения:') || 'Требуется доработка') : null;
+      try {
+        await apiRequest('creation', `/api/moderation/${id}/${action}`, {
+          method: 'POST',
+          body: reason ? { reason } : undefined
+        });
+        showAlert('alert', action === 'approve' ? 'Тест опубликован.' : 'Тест отклонён.', 'success');
+        loadPending();
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+
+    loadPending();
+  </script>
+</body>
+</html>

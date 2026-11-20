@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Мои вопросы — KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container">
+    <div class="page-header">
+      <div>
+        <h1>Банк вопросов</h1>
+        <p class="page-subtitle">Вопросы, доступные для включения в ваши тесты</p>
+      </div>
+      <a href="question-edit.html" class="btn btn-primary">+ Новый вопрос</a>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Текст вопроса</th>
+            <th>Тип</th>
+            <th>Баллы</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="questions-body"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    requireAuth();
+    renderNavbar('questions');
+
+    async function loadQuestions() {
+      try {
+        const data = await apiRequest('creation', '/api/questions');
+        const list = Array.isArray(data) ? data : (data.items || []);
+        const tbody = document.getElementById('questions-body');
+
+        if (!list.length) {
+          tbody.innerHTML = '<tr><td colspan="4" class="muted">Вопросов пока нет. Создайте первый вопрос.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = list.map(q => `
+          <tr>
+            <td>${q.text}</td>
+            <td><span class="badge">${q.type || 'SingleChoice'}</span></td>
+            <td class="mono">${q.points ?? 1}</td>
+            <td style="text-align:right;" class="row-actions">
+              <a href="question-edit.html?id=${q.id}" class="btn btn-sm">Изменить</a>
+              <button class="btn btn-sm btn-danger" onclick="deleteQuestion('${q.id}')">Удалить</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+
+    async function deleteQuestion(id) {
+      if (!confirm('Удалить вопрос?')) return;
+      try {
+        await apiRequest('creation', `/api/questions/${id}`, { method: 'DELETE' });
+        loadQuestions();
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+    loadQuestions();
+  </script>
+</body>
+</html>

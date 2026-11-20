@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Профиль — KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container">
+    <div class="page-header">
+      <div>
+        <h1>Профиль пользователя</h1>
+        <p class="page-subtitle" id="user-meta">Загрузка...</p>
+      </div>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <h2 style="font-size:17px;margin:24px 0 12px;">История прохождений</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Тест</th>
+            <th>Статус</th>
+            <th>Балл</th>
+            <th>Дата</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="attempts-body">
+          <tr><td colspan="5" class="muted">Загрузка...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    const currentUser = requireAuth();
+    renderNavbar('profile');
+
+    async function loadProfile() {
+      try {
+        const me = await apiRequest('user', '/api/users/me');
+        document.getElementById('user-meta').textContent =
+          `${me.fullName || ''} · ${me.email} · Роль: ${me.role || currentUser.role}`;
+
+        const attempts = await apiRequest('taking', '/api/attempts/my');
+        const list = Array.isArray(attempts) ? attempts : (attempts.items || []);
+        const tbody = document.getElementById('attempts-body');
+
+        if (!list.length) {
+          tbody.innerHTML = '<tr><td colspan="5" class="muted">Вы ещё не проходили тесты.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = list.map(a => `
+          <tr>
+            <td><strong>${a.testTitle || a.testUid}</strong></td>
+            <td><span class="badge ${a.isCompleted ? 'badge-success' : 'badge-warn'}">${a.isCompleted ? 'Завершён' : 'В процессе'}</span></td>
+            <td class="mono">${a.score != null ? `${a.score} / ${a.maxScore ?? '?'}` : '—'}</td>
+            <td class="muted">${a.startedAt ? new Date(a.startedAt).toLocaleString('ru-RU') : '—'}</td>
+            <td style="text-align:right;">
+              <a href="${a.isCompleted ? `result.html?attemptId=${a.id}` : `take-test.html?testUid=${a.testUid}`}" class="btn btn-sm">
+                ${a.isCompleted ? 'Результат' : 'Продолжить'}
+              </a>
+            </td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+    loadProfile();
+  </script>
+</body>
+</html>

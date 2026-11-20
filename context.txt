@@ -96,6 +96,16 @@ public static class CommonServiceExtensions
             });
         });
 
+        services.AddCors(options =>
+        {
+            options.AddPolicy("AllowFrontend", policy =>
+            {
+                policy.WithOrigins("http://localhost:8080", "http://127.0.0.1:8080")
+                      .AllowAnyHeader()
+                      .AllowAnyMethod();
+            });
+        });
+
         return services;
     }
 
@@ -126,6 +136,8 @@ public static class CommonServiceExtensions
 
     public static IApplicationBuilder UseCommonMiddleware(this IApplicationBuilder app, IWebHostEnvironment env)
     {
+        app.UseCors("AllowFrontend");
+
         app.UseMiddleware<ExceptionHandlingMiddleware>();
 
         if (env.IsDevelopment())
@@ -463,6 +475,23 @@ public record PublishTestResponse(
     string Status,
     DateTimeOffset PublishedAt);
 
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Contracts\Tests\TestDetailResponse.cs ===
+namespace TestCreationService.Contracts.Tests;
+
+public record TestQuestionItemResponse(Guid QuestionUid, int OrderIndex, int Points);
+
+public record TestDetailResponse(
+    Guid Uid,
+    Guid CategoryUid,
+    string Title,
+    string? Description,
+    int? TimeLimitSeconds,
+    int? MaxAttempts,
+    int PassingScore,
+    bool IsPublic,
+    string Status,
+    IReadOnlyList<TestQuestionItemResponse> Questions);
+
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Contracts\Tests\TestQuestionItemRequest.cs ===
 namespace TestCreationService.Contracts.Tests;
 
@@ -584,6 +613,31 @@ public abstract class BaseApiController : ControllerBase
         }
 
         return userUid;
+    }
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestCreationService\Controllers\CategoriesController.cs ===
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using TestCreationService.Data;
+
+namespace TestCreationService.Controllers;
+
+[Route("api/categories")]
+[AllowAnonymous]
+public class CategoriesController(TestCreationDbContext dbContext) : BaseApiController
+{
+    [HttpGet]
+    public async Task<IActionResult> GetAll(CancellationToken cancellationToken)
+    {
+        var categories = await dbContext.Categories
+            .AsNoTracking()
+            .OrderBy(c => c.Id)
+            .Select(c => new { c.Uid, c.Name, c.Description })
+            .ToListAsync(cancellationToken);
+
+        return Ok(categories);
     }
 }
 
@@ -798,6 +852,20 @@ public class TestsController(
     {
         var authorUid = GetCurrentUserUid();
         var response = await testService.GetMyAsync(authorUid, cancellationToken);
+        return Ok(response);
+    }
+
+    [HttpGet("{uid:guid}")]
+    [ProducesResponseType(typeof(TestDetailResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<TestDetailResponse>> GetById(
+        [FromRoute] Guid uid,
+        CancellationToken cancellationToken)
+    {
+        var authorUid = GetCurrentUserUid();
+        var response = await testService.GetByIdAsync(uid, authorUid, cancellationToken);
         return Ok(response);
     }
 
@@ -1751,8 +1819,24 @@ public class QuestionService(TestCreationDbContext dbContext) : IQuestionService
             }
         }
 
-        question.QuestionTags.Clear();
-        await AttachTagsAsync(question, request.Tags, cancellationToken);
+        var normalizedNames = request.Tags
+            .Select(t => t.Trim().ToLowerInvariant())
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Distinct()
+            .ToHashSet();
+
+        var toRemove = question.QuestionTags
+            .Where(qt => !normalizedNames.Contains(qt.Tag.Name.ToLowerInvariant()))
+            .ToList();
+        foreach (var qt in toRemove)
+            question.QuestionTags.Remove(qt);
+
+        var existingNames = question.QuestionTags
+            .Select(qt => qt.Tag.Name.ToLowerInvariant())
+            .ToHashSet();
+        var namesToAdd = normalizedNames.Where(n => !existingNames.Contains(n)).ToList();
+        if (namesToAdd.Count > 0)
+            await AttachTagsAsync(question, namesToAdd, cancellationToken);
 
         await dbContext.SaveChangesAsync(cancellationToken);
 
@@ -1981,23 +2065,39 @@ public class TestService(
         test.IsPublic = request.IsPublic;
         test.UpdatedAt = now;
 
-        dbContext.TestQuestions.RemoveRange(test.TestQuestions);
-        test.TestQuestions.Clear();
+        var existingByQuestionId = test.TestQuestions.ToDictionary(tq => tq.QuestionId);
+        var requestedQuestionIds = request.Questions
+            .Select(i => questionsByUid[i.QuestionUid].Id)
+            .ToHashSet();
+
+        var toRemove = test.TestQuestions
+            .Where(tq => !requestedQuestionIds.Contains(tq.QuestionId))
+            .ToList();
+        dbContext.TestQuestions.RemoveRange(toRemove);
 
         foreach (var item in request.Questions.OrderBy(q => q.OrderIndex))
         {
             var question = questionsByUid[item.QuestionUid];
             var snapshotJson = BuildQuestionSnapshotJson(question, item.OrderIndex, item.Points);
 
-            test.TestQuestions.Add(new TestQuestion
+            if (existingByQuestionId.TryGetValue(question.Id, out var existingTq))
             {
-                TestId = test.Id,
-                QuestionId = question.Id,
-                Question = question,
-                OrderIndex = item.OrderIndex,
-                Points = item.Points,
-                Snapshot = snapshotJson
-            });
+                existingTq.OrderIndex = item.OrderIndex;
+                existingTq.Points = item.Points;
+                existingTq.Snapshot = snapshotJson;
+            }
+            else
+            {
+                test.TestQuestions.Add(new TestQuestion
+                {
+                    TestId = test.Id,
+                    QuestionId = question.Id,
+                    Question = question,
+                    OrderIndex = item.OrderIndex,
+                    Points = item.Points,
+                    Snapshot = snapshotJson
+                });
+            }
         }
 
         await dbContext.SaveChangesAsync(cancellationToken);
@@ -2134,6 +2234,45 @@ public class TestService(
             .ToListAsync(cancellationToken);
 
         return tests.Select(MapToResponse).ToList();
+    }
+
+    public async Task<TestDetailResponse> GetByIdAsync(
+        Guid testUid,
+        Guid authorUid,
+        CancellationToken cancellationToken = default)
+    {
+        var test = await dbContext.Tests
+            .AsNoTracking()
+            .Include(t => t.Category)
+            .Include(t => t.TestQuestions)
+                .ThenInclude(tq => tq.Question)
+            .FirstOrDefaultAsync(t => t.Uid == testUid, cancellationToken)
+            ?? throw new NotFoundException($"Тест с Uid {testUid} не найден.");
+
+        if (test.AuthorUid != authorUid)
+        {
+            throw new ForbiddenException("Просматривать детали теста для редактирования может только его автор.");
+        }
+
+        var questions = test.TestQuestions
+            .OrderBy(tq => tq.OrderIndex)
+            .Select(tq => new TestQuestionItemResponse(
+                QuestionUid: tq.Question.Uid,
+                OrderIndex: tq.OrderIndex,
+                Points: tq.Points))
+            .ToList();
+
+        return new TestDetailResponse(
+            Uid: test.Uid,
+            CategoryUid: test.Category.Uid,
+            Title: test.Title,
+            Description: test.Description,
+            TimeLimitSeconds: test.TimeLimitSeconds,
+            MaxAttempts: test.MaxAttempts,
+            PassingScore: test.PassingScore,
+            IsPublic: test.IsPublic,
+            Status: test.Status.ToString(),
+            Questions: questions);
     }
 
     public async Task<TestSnapshotResponse> GetSnapshotAsync(
@@ -2318,6 +2457,7 @@ public interface ITestService
     Task<PublishTestResponse> PublishAsync(Guid testUid, Guid authorUid, CancellationToken cancellationToken = default);
     Task UnpublishAsync(Guid testUid, Guid authorUid, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<TestResponse>> GetMyAsync(Guid authorUid, CancellationToken cancellationToken = default);
+    Task<TestDetailResponse> GetByIdAsync(Guid testUid, Guid authorUid, CancellationToken cancellationToken = default);
     Task<TestSnapshotResponse> GetSnapshotAsync(Guid testUid, bool includeCorrectAnswers = true, CancellationToken cancellationToken = default);
 }
 
@@ -2751,6 +2891,7 @@ app.Run();
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+	<NoWarn>CS9057</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -3847,6 +3988,13 @@ public class AttemptService(
             throw new ForbiddenException("Нет доступа к результатам данной попытки.");
         }
 
+        if (TryMarkExpired(attempt, DateTime.UtcNow))
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await snapshotCache.RemoveAsync(attempt.Uid, cancellationToken);
+            throw new BadRequestException("Время на прохождение попытки истекло.");
+        }
+
         if (attempt.Result is null)
         {
             throw new BadRequestException("Попытка ещё не завершена, результат недоступен.");
@@ -4199,7 +4347,7 @@ public class SubmitAnswerRequestValidator : AbstractValidator<SubmitAnswerReques
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\TestTakingService\appsettings.json ===
 {
   "ConnectionStrings": {
-    "DefaultConnection": "Host=localhost;Port=5432;Database=KnowledgeDb;Username=postgres;Password=CHANGE_ME"
+    "DefaultConnection": "Host=localhost;Port=5433;Database=KnowledgeDb;Username=postgres;Password=CHANGE_ME"
   },
   "Jwt": {
     "SecretKey": "CHANGE_ME_SUPER_SECRET_KEY_AT_LEAST_32_CHARS",
@@ -5986,8 +6134,9 @@ public class IndexService(
 }
 
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\Services\Implementations\SearchService.cs ===
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
-using NpgsqlTypes;
 using SearchService.Contracts.Catalog;
 using SearchService.Contracts.Common;
 using SearchService.Contracts.Search;
@@ -6001,7 +6150,7 @@ public class SearchService(
     SearchDbContext dbContext,
     ISearchCache searchCache) : ISearchService
 {
-    private static readonly TimeSpan SearchCacheTtl = TimeSpan.FromMinutes(3);
+    private static readonly TimeSpan SearchCacheTtl = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan CatalogCacheTtl = TimeSpan.FromMinutes(5);
 
     public async Task<PagedResponse<SearchResponse>> SearchAsync(
@@ -6016,7 +6165,9 @@ public class SearchService(
             : request.Sort.Trim().ToLowerInvariant();
 
         var version = await searchCache.GetVersionAsync(cancellationToken);
-        var cacheKey = $"v{version}:search:q={normalizedQuery}:cat={normalizedCategory}:tag={normalizedTag}:author={request.Author}:sort={normalizedSort}:p={request.Page}:s={request.Size}";
+        var rawQueryKey = $"q={normalizedQuery}|cat={normalizedCategory}|tag={normalizedTag}|author={request.Author}|sort={normalizedSort}|p={request.Page}|s={request.Size}";
+        var queryHash = ComputeQueryHash(rawQueryKey);
+        var cacheKey = $"v{version}:search:cache:{queryHash}";
 
         var cached = await searchCache.GetAsync<PagedResponse<SearchResponse>>(cacheKey, cancellationToken);
         if (cached is not null)
@@ -6042,27 +6193,40 @@ public class SearchService(
             baseQuery = baseQuery.Where(x => x.AuthorUid == request.Author.Value);
         }
 
-        NpgsqlTsQuery? tsQuery = null;
-        if (normalizedQuery is not null)
+        var hasTextQuery = normalizedQuery is not null;
+        if (hasTextQuery)
         {
-            tsQuery = EF.Functions.WebSearchToTsQuery("russian", normalizedQuery);
-            baseQuery = baseQuery.Where(x => x.SearchVector.Matches(tsQuery));
+            baseQuery = baseQuery.Where(x =>
+                x.SearchVector.Matches(EF.Functions.WebSearchToTsQuery("russian", normalizedQuery!)));
         }
 
         var totalCount = await baseQuery.CountAsync(cancellationToken);
 
-        var joinedQuery = from idx in baseQuery
-                          join stats in dbContext.TestStatistics.AsNoTracking()
-                              on idx.TestUid equals stats.TestUid into statsGroup
-                          from stats in statsGroup.DefaultIfEmpty()
-                          select new SearchProjection
-                          {
-                              Index = idx,
-                              TotalAttempts = stats != null ? stats.TotalAttempts : 0,
-                              PassRate = stats != null ? stats.PassRate : 0m,
-                              AvgScore = stats != null ? stats.AvgScore : 0m,
-                              Rank = tsQuery != null ? idx.SearchVector.Rank(tsQuery) : 0f
-                          };
+        var joinedQuery = hasTextQuery
+            ? from idx in baseQuery
+              join stats in dbContext.TestStatistics.AsNoTracking()
+                  on idx.TestUid equals stats.TestUid into statsGroup
+              from stats in statsGroup.DefaultIfEmpty()
+              select new SearchProjection
+              {
+                  Index = idx,
+                  TotalAttempts = stats != null ? stats.TotalAttempts : 0,
+                  PassRate = stats != null ? stats.PassRate : 0m,
+                  AvgScore = stats != null ? stats.AvgScore : 0m,
+                  Rank = idx.SearchVector.Rank(EF.Functions.WebSearchToTsQuery("russian", normalizedQuery!))
+              }
+            : from idx in baseQuery
+              join stats in dbContext.TestStatistics.AsNoTracking()
+                  on idx.TestUid equals stats.TestUid into statsGroup
+              from stats in statsGroup.DefaultIfEmpty()
+              select new SearchProjection
+              {
+                  Index = idx,
+                  TotalAttempts = stats != null ? stats.TotalAttempts : 0,
+                  PassRate = stats != null ? stats.PassRate : 0m,
+                  AvgScore = stats != null ? stats.AvgScore : 0m,
+                  Rank = 0f
+              };
 
         joinedQuery = normalizedSort switch
         {
@@ -6077,7 +6241,7 @@ public class SearchService(
             "avg_score" => joinedQuery
                 .OrderByDescending(x => x.AvgScore)
                 .ThenByDescending(x => x.TotalAttempts),
-            _ => tsQuery != null
+            _ => hasTextQuery
                 ? joinedQuery
                     .OrderByDescending(x => x.Rank)
                     .ThenByDescending(x => x.TotalAttempts)
@@ -6122,7 +6286,7 @@ public class SearchService(
     {
         var normalizedCategory = string.IsNullOrWhiteSpace(category) ? null : category.Trim();
         var version = await searchCache.GetVersionAsync(cancellationToken);
-        var cacheKey = $"v{version}:catalog:cat={normalizedCategory}:p={page}:s={size}";
+        var cacheKey = $"v{version}:catalog:all:cat={normalizedCategory}:p={page}:s={size}";
 
         var cached = await searchCache.GetAsync<PagedResponse<CatalogItemResponse>>(cacheKey, cancellationToken);
         if (cached is not null)
@@ -6169,7 +6333,7 @@ public class SearchService(
     {
         var clampedLimit = Math.Clamp(limit, 1, 50);
         var version = await searchCache.GetVersionAsync(cancellationToken);
-        var cacheKey = $"v{version}:catalog:popular:l={clampedLimit}";
+        var cacheKey = $"v{version}:catalog:popular:{clampedLimit}";
 
         var cached = await searchCache.GetAsync<List<CatalogItemResponse>>(cacheKey, cancellationToken);
         if (cached is not null)
@@ -6203,7 +6367,7 @@ public class SearchService(
     {
         var clampedLimit = Math.Clamp(limit, 1, 50);
         var version = await searchCache.GetVersionAsync(cancellationToken);
-        var cacheKey = $"v{version}:catalog:new:l={clampedLimit}";
+        var cacheKey = $"v{version}:catalog:new:{clampedLimit}";
 
         var cached = await searchCache.GetAsync<List<CatalogItemResponse>>(cacheKey, cancellationToken);
         if (cached is not null)
@@ -6228,6 +6392,12 @@ public class SearchService(
         var items = rows.Select(MapToCatalogItem).ToList();
         await searchCache.SetAsync(cacheKey, items, CatalogCacheTtl, cancellationToken);
         return items;
+    }
+
+    private static string ComputeQueryHash(string input)
+    {
+        var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
+        return Convert.ToHexString(hashBytes)[..16].ToLowerInvariant();
     }
 
     private static CatalogItemResponse MapToCatalogItem(CatalogProjection row) =>
@@ -6480,7 +6650,7 @@ public class SearchTestsRequestValidator : AbstractValidator<SearchTestsRequest>
 === FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\src\SearchService\appsettings.json ===
 {
   "ConnectionStrings": {
-    "DefaultConnection": "Host=localhost;Port=5432;Database=KnowledgeDb;Username=postgres;Password=CHANGE_ME"
+    "DefaultConnection": "Host=localhost;Port=5433;Database=KnowledgeDb;Username=postgres;Password=CHANGE_ME"
   },
   "Redis": {
     "ConnectionString": "localhost:6379",
@@ -6613,4 +6783,1518 @@ app.Run();
 
 </Project>
 
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\frontend\css\style.css ===
+:root {
+  --bg: #f7f7f5;
+  --surface: #ffffff;
+  --border: #e2e4e9;
+  --border-strong: #c8ccd4;
+  --text: #18181b;
+  --text-muted: #52525b;
+  --accent: #1e40af;
+  --accent-hover: #1e3a8a;
+  --danger: #b91c1c;
+  --danger-bg: #fef2f2;
+  --success: #15803d;
+  --success-bg: #f0fdf4;
+  --warn: #a16207;
+  --warn-bg: #fefce8;
+  --radius: 4px;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Р’РµСЂС…РЅСЏСЏ РЅР°РІРёРіР°С†РёСЏ */
+.topbar {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.topbar-inner {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 20px;
+  height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.brand {
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.brand:hover { text-decoration: none; }
+.brand-tag {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  font-size: 14px;
+}
+.nav-links a { color: var(--text-muted); }
+.nav-links a.active, .nav-links a:hover { color: var(--text); text-decoration: none; }
+
+/* РљРѕРЅС‚РµР№РЅРµСЂ */
+.container {
+  max-width: 1080px;
+  margin: 28px auto;
+  padding: 0 20px;
+}
+.container-narrow { max-width: 440px; }
+
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+  margin-bottom: 20px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.page-header h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.page-subtitle {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* РљР°СЂС‚РѕС‡РєРё Рё СЃРµС‚РєР° */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  margin-bottom: 16px;
+}
+
+.grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+@media (max-width: 768px) {
+  .grid-2, .grid-3 { grid-template-columns: 1fr; }
+}
+
+/* Р¤РѕСЂРјС‹ Рё РєРЅРѕРїРєРё */
+.form-group { margin-bottom: 14px; }
+label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 5px;
+  color: var(--text);
+}
+
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="number"],
+select,
+textarea {
+  width: 100%;
+  padding: 8px 11px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+}
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+textarea { min-height: 84px; resize: vertical; }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 14px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+.btn:hover { background: #f1f2f4; text-decoration: none; }
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+.btn-danger {
+  color: var(--danger);
+  border-color: #fecaca;
+  background: var(--danger-bg);
+}
+.btn-danger:hover { background: #fee2e2; }
+
+.btn-sm { padding: 4px 10px; font-size: 13px; }
+
+/* РўР°Р±Р»РёС†С‹ */
+.table-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow-x: auto;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+th, td {
+  text-align: left;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+}
+th {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  background: #fafafa;
+}
+tr:last-child td { border-bottom: none; }
+
+/* Р‘РµР№РґР¶Рё Рё СѓРІРµРґРѕРјР»РµРЅРёСЏ */
+.badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: #f4f4f5;
+  color: var(--text-muted);
+}
+.badge-success { background: var(--success-bg); color: var(--success); border-color: #bbf7d0; }
+.badge-warn { background: var(--warn-bg); color: var(--warn); border-color: #fde68a; }
+.badge-danger { background: var(--danger-bg); color: var(--danger); border-color: #fecaca; }
+
+.alert {
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  margin-bottom: 16px;
+  display: none;
+}
+.alert.show { display: block; }
+.alert-error { background: var(--danger-bg); border-color: #fecaca; color: var(--danger); }
+.alert-success { background: var(--success-bg); border-color: #bbf7d0; color: var(--success); }
+
+.mono { font-family: var(--font-mono); }
+.muted { color: var(--text-muted); font-size: 13px; }
+.row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\frontend\js\api.js ===
+// РЈРєР°Р¶РёС‚Рµ Р±Р°Р·РѕРІС‹Рµ URL РјРёРєСЂРѕСЃРµСЂРІРёСЃРѕРІ (Р»РѕРєР°Р»СЊРЅРѕ СЂР°Р·РЅС‹Рµ РїРѕСЂС‚С‹ РёР»Рё РµРґРёРЅС‹Р№ РїСЂРµС„РёРєСЃ С‡РµСЂРµР· Nginx)
+const SERVICE_URLS = {
+  user: 'http://localhost:5001',
+  creation: 'http://localhost:5002',
+  taking: 'http://localhost:5003',
+  search: 'http://localhost:5004'
+};
+
+async function apiRequest(service, path, options = {}) {
+  const baseUrl = SERVICE_URLS[service] || '';
+  const token = localStorage.getItem('kc_token');
+
+  const headers = {
+    ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+    ...(options.headers || {})
+  };
+
+  const response = await fetch(`${baseUrl}${path}`, {
+    ...options,
+    headers,
+    body: options.body ? JSON.stringify(options.body) : undefined
+  });
+
+  if (response.status === 401) {
+    localStorage.removeItem('kc_token');
+    if (!window.location.pathname.endsWith('login.html')) {
+      window.location.href = 'login.html';
+    }
+    throw new Error('РўСЂРµР±СѓРµС‚СЃСЏ Р°РІС‚РѕСЂРёР·Р°С†РёСЏ');
+  }
+
+  if (response.status === 204) return null;
+
+  const data = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    // Р Р°Р·Р±РѕСЂ РµРґРёРЅРѕРіРѕ С„РѕСЂРјР°С‚Р° РѕС€РёР±РѕРє РёР· Рї. 5.3: { error: { code, message, details } }
+    if (data && data.error) {
+      const detailsText = Array.isArray(data.error.details) && data.error.details.length
+        ? ': ' + data.error.details.map(d => d.message || d).join('; ')
+        : '';
+      throw new Error(`${data.error.message || 'РћС€РёР±РєР° Р·Р°РїСЂРѕСЃР°'}${detailsText}`);
+    }
+    throw new Error(`HTTP ${response.status}`);
+  }
+
+  return data;
+}
+
+function showAlert(elementId, message, type = 'error') {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  el.textContent = message;
+  el.className = `alert alert-${type} show`;
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\frontend\js\auth.js ===
+function getToken() {
+  return localStorage.getItem('kc_token');
+}
+
+function parseJwt(token) {
+  try {
+    const payload = token.split('.')[1];
+    return JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')));
+  } catch {
+    return null;
+  }
+}
+
+function getCurrentUser() {
+  const token = getToken();
+  if (!token) return null;
+  const claims = parseJwt(token);
+  if (!claims) return null;
+  if (claims.exp && claims.exp * 1000 < Date.now()) {
+    localStorage.removeItem('kc_token');
+    return null;
+  }
+  return {
+    id: claims.sub || claims.nameid,
+    email: claims.email || claims['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress'] || 'РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ',
+    role: claims.role || claims['http://schemas.microsoft.com/ws/2008/06/identity/claims/role'] || 'User'
+  };
+}
+
+function requireAuth() {
+  const user = getCurrentUser();
+  if (!user) {
+    window.location.href = 'login.html';
+    return null;
+  }
+  return user;
+}
+
+function logout() {
+  localStorage.removeItem('kc_token');
+  window.location.href = 'login.html';
+}
+
+function renderNavbar(activePage = '') {
+  const user = getCurrentUser();
+  const nav = document.getElementById('navbar');
+  if (!nav) return;
+
+  const isMod = user && (user.role === 'Moderator' || user.role === 'Admin');
+
+  nav.innerHTML = `
+    <div class="topbar-inner">
+      <div style="display:flex;align-items:center;gap:24px;">
+        <a href="index.html" class="brand">KnowledgeControl <span class="brand-tag">LMS</span></a>
+        <nav class="nav-links">
+          <a href="index.html" class="${activePage === 'index' ? 'active' : ''}">РљР°С‚Р°Р»РѕРі</a>
+          <a href="search.html" class="${activePage === 'search' ? 'active' : ''}">РџРѕРёСЃРє</a>
+          ${user ? `
+            <a href="tests.html" class="${activePage === 'tests' ? 'active' : ''}">РњРѕРё С‚РµСЃС‚С‹</a>
+            <a href="questions.html" class="${activePage === 'questions' ? 'active' : ''}">Р’РѕРїСЂРѕСЃС‹</a>
+            ${isMod ? `<a href="moderation.html" class="${activePage === 'moderation' ? 'active' : ''}">РњРѕРґРµСЂР°С†РёСЏ</a>` : ''}
+          ` : ''}
+        </nav>
+      </div>
+      <div class="nav-links">
+        ${user ? `
+          <a href="profile.html" class="${activePage === 'profile' ? 'active' : ''}">${user.email}</a>
+          <button class="btn btn-sm" onclick="logout()">Р’С‹Р№С‚Рё</button>
+        ` : `
+          <a href="login.html">Р’С…РѕРґ</a>
+          <a href="register.html" class="btn btn-sm btn-primary" style="color:#fff;">Р РµРіРёСЃС‚СЂР°С†РёСЏ</a>
+        `}
+      </div>
+    </div>
+  `;
+}
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\frontend\index.html ===
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>РљР°С‚Р°Р»РѕРі С‚РµСЃС‚РѕРІ вЂ” KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container">
+    <div class="page-header">
+      <div>
+        <h1>РљР°С‚Р°Р»РѕРі С‚РµСЃС‚РѕРІ</h1>
+        <p class="page-subtitle">РћРїСѓР±Р»РёРєРѕРІР°РЅРЅС‹Рµ РїСЂРѕРІРµСЂРѕС‡РЅС‹Рµ РјР°С‚РµСЂРёР°Р»С‹</p>
+      </div>
+      <a href="search.html" class="btn">Р Р°СЃС€РёСЂРµРЅРЅС‹Р№ РїРѕРёСЃРє</a>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <div id="tests-grid" class="grid-2"></div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    renderNavbar('index');
+
+    async function loadCatalog() {
+      try {
+        const data = await apiRequest('search', '/api/tests');
+        const items = Array.isArray(data) ? data : (data.items || []);
+        const grid = document.getElementById('tests-grid');
+
+        if (!items.length) {
+          grid.innerHTML = '<p class="muted">РћРїСѓР±Р»РёРєРѕРІР°РЅРЅС‹С… С‚РµСЃС‚РѕРІ РїРѕРєР° РЅРµС‚.</p>';
+          return;
+        }
+
+        grid.innerHTML = items.map(t => `
+          <div class="card" style="display:flex;flex-direction:column;justify-content:space-between;">
+            <div>
+              <div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:8px;">
+                <span class="badge">${t.category || 'РћР±С‰РµРµ'}</span>
+                <span class="mono muted">${t.timeLimitMinutes ? t.timeLimitMinutes + ' РјРёРЅ' : 'Р‘РµР· С‚Р°Р№РјРµСЂР°'}</span>
+              </div>
+              <h3 style="margin:0 0 6px;font-size:17px;">${t.title}</h3>
+              <p class="muted" style="margin:0 0 14px;">${t.description || 'РћРїРёСЃР°РЅРёРµ РѕС‚СЃСѓС‚СЃС‚РІСѓРµС‚'}</p>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;padding-top:12px;border-top:1px solid var(--border);">
+              <span class="muted">Р’РѕРїСЂРѕСЃРѕРІ: <strong>${t.questionsCount ?? 'вЂ”'}</strong> В· РџРѕРїС‹С‚РѕРє: ${t.attemptsCount ?? 0}</span>
+              <a href="take-test.html?testUid=${t.uid || t.id}" class="btn btn-sm btn-primary">РџСЂРѕР№С‚Рё</a>
+            </div>
+          </div>
+        `).join('');
+      } catch (e) {
+        showAlert('alert', e.message);
+      }
+    }
+    loadCatalog();
+  </script>
+</body>
+</html>
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\frontend\login.html ===
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Р’С…РѕРґ вЂ” KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container container-narrow">
+    <div class="page-header">
+      <div>
+        <h1>Р’С…РѕРґ РІ СЃРёСЃС‚РµРјСѓ</h1>
+        <p class="page-subtitle">РСЃРїРѕР»СЊР·СѓР№С‚Рµ СѓС‡С‘С‚РЅСѓСЋ Р·Р°РїРёСЃСЊ СЃС‚СѓРґРµРЅС‚Р° РёР»Рё Р°РІС‚РѕСЂР°</p>
+      </div>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <form id="login-form" class="card">
+      <div class="form-group">
+        <label for="email">Email</label>
+        <input type="email" id="email" required autocomplete="email">
+      </div>
+      <div class="form-group">
+        <label for="password">РџР°СЂРѕР»СЊ</label>
+        <input type="password" id="password" required autocomplete="current-password">
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%;">Р’РѕР№С‚Рё</button>
+      <p class="muted" style="margin:14px 0 0;text-align:center;">
+        РќРµС‚ Р°РєРєР°СѓРЅС‚Р°? <a href="register.html">Р—Р°СЂРµРіРёСЃС‚СЂРёСЂРѕРІР°С‚СЊСЃСЏ</a>
+      </p>
+    </form>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    renderNavbar();
+    document.getElementById('login-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        const res = await apiRequest('user', '/api/auth/login', {
+          method: 'POST',
+          body: {
+            email: document.getElementById('email').value.trim(),
+            password: document.getElementById('password').value
+          }
+        });
+        localStorage.setItem('kc_token', res.token || res.accessToken);
+        window.location.href = 'index.html';
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    });
+  </script>
+</body>
+</html>
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\frontend\moderation.html ===
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>РњРѕРґРµСЂР°С†РёСЏ С‚РµСЃС‚РѕРІ вЂ” KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container">
+    <div class="page-header">
+      <div>
+        <h1>РћС‡РµСЂРµРґСЊ РјРѕРґРµСЂР°С†РёРё</h1>
+        <p class="page-subtitle">РџСЂРѕРІРµСЂРєР° Рё РїСѓР±Р»РёРєР°С†РёСЏ С‚РµСЃС‚РѕРІ РїРµСЂРµРґ РїРѕРїР°РґР°РЅРёРµРј РІ РѕР±С‰РёР№ РєР°С‚Р°Р»РѕРі</p>
+      </div>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>РќР°Р·РІР°РЅРёРµ С‚РµСЃС‚Р°</th>
+            <th>РљР°С‚РµРіРѕСЂРёСЏ</th>
+            <th>РђРІС‚РѕСЂ</th>
+            <th>Р РµС€РµРЅРёРµ</th>
+          </tr>
+        </thead>
+        <tbody id="mod-body"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    requireAuth();
+    renderNavbar('moderation');
+
+    async function loadPending() {
+      try {
+        const data = await apiRequest('creation', '/api/moderation/pending');
+        const list = Array.isArray(data) ? data : (data.items || []);
+        const tbody = document.getElementById('mod-body');
+
+        if (!list.length) {
+          tbody.innerHTML = '<tr><td colspan="4" class="muted">РћС‡РµСЂРµРґСЊ РјРѕРґРµСЂР°С†РёРё РїСѓСЃС‚Р°.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = list.map(t => `
+          <tr>
+            <td><strong>${t.title}</strong><div class="muted">${t.description || ''}</div></td>
+            <td><span class="badge">${t.category || 'РћР±С‰РµРµ'}</span></td>
+            <td class="mono">${t.authorEmail || t.authorId || 'вЂ”'}</td>
+            <td class="row-actions">
+              <button class="btn btn-sm btn-primary" onclick="moderate('${t.id}', 'approve')">РћРїСѓР±Р»РёРєРѕРІР°С‚СЊ</button>
+              <button class="btn btn-sm btn-danger" onclick="moderate('${t.id}', 'reject')">РћС‚РєР»РѕРЅРёС‚СЊ</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+
+    async function moderate(id, action) {
+      const reason = action === 'reject' ? (prompt('РџСЂРёС‡РёРЅР° РѕС‚РєР»РѕРЅРµРЅРёСЏ:') || 'РўСЂРµР±СѓРµС‚СЃСЏ РґРѕСЂР°Р±РѕС‚РєР°') : null;
+      try {
+        await apiRequest('creation', `/api/moderation/${id}/${action}`, {
+          method: 'POST',
+          body: reason ? { reason } : undefined
+        });
+        showAlert('alert', action === 'approve' ? 'РўРµСЃС‚ РѕРїСѓР±Р»РёРєРѕРІР°РЅ.' : 'РўРµСЃС‚ РѕС‚РєР»РѕРЅС‘РЅ.', 'success');
+        loadPending();
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+
+    loadPending();
+  </script>
+</body>
+</html>
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\frontend\profile.html ===
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>РџСЂРѕС„РёР»СЊ вЂ” KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container">
+    <div class="page-header">
+      <div>
+        <h1>РџСЂРѕС„РёР»СЊ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ</h1>
+        <p class="page-subtitle" id="user-meta">Р—Р°РіСЂСѓР·РєР°...</p>
+      </div>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <h2 style="font-size:17px;margin:24px 0 12px;">РСЃС‚РѕСЂРёСЏ РїСЂРѕС…РѕР¶РґРµРЅРёР№</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>РўРµСЃС‚</th>
+            <th>РЎС‚Р°С‚СѓСЃ</th>
+            <th>Р‘Р°Р»Р»</th>
+            <th>Р”Р°С‚Р°</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="attempts-body">
+          <tr><td colspan="5" class="muted">Р—Р°РіСЂСѓР·РєР°...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    const currentUser = requireAuth();
+    renderNavbar('profile');
+
+    async function loadProfile() {
+      try {
+        const me = await apiRequest('user', '/api/users/me');
+        document.getElementById('user-meta').textContent =
+          `${me.fullName || ''} В· ${me.email} В· Р РѕР»СЊ: ${me.role || currentUser.role}`;
+
+        const attempts = await apiRequest('taking', '/api/attempts/my');
+        const list = Array.isArray(attempts) ? attempts : (attempts.items || []);
+        const tbody = document.getElementById('attempts-body');
+
+        if (!list.length) {
+          tbody.innerHTML = '<tr><td colspan="5" class="muted">Р’С‹ РµС‰С‘ РЅРµ РїСЂРѕС…РѕРґРёР»Рё С‚РµСЃС‚С‹.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = list.map(a => `
+          <tr>
+            <td><strong>${a.testTitle || a.testUid}</strong></td>
+            <td><span class="badge ${a.isCompleted ? 'badge-success' : 'badge-warn'}">${a.isCompleted ? 'Р—Р°РІРµСЂС€С‘РЅ' : 'Р’ РїСЂРѕС†РµСЃСЃРµ'}</span></td>
+            <td class="mono">${a.score != null ? `${a.score} / ${a.maxScore ?? '?'}` : 'вЂ”'}</td>
+            <td class="muted">${a.startedAt ? new Date(a.startedAt).toLocaleString('ru-RU') : 'вЂ”'}</td>
+            <td style="text-align:right;">
+              <a href="${a.isCompleted ? `result.html?attemptId=${a.id}` : `take-test.html?testUid=${a.testUid}`}" class="btn btn-sm">
+                ${a.isCompleted ? 'Р РµР·СѓР»СЊС‚Р°С‚' : 'РџСЂРѕРґРѕР»Р¶РёС‚СЊ'}
+              </a>
+            </td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+    loadProfile();
+  </script>
+</body>
+</html>
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\frontend\question-edit.html ===
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Р РµРґР°РєС‚РѕСЂ РІРѕРїСЂРѕСЃР° вЂ” KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container" style="max-width:720px;">
+    <div class="page-header">
+      <div>
+        <h1 id="page-title">РќРѕРІС‹Р№ РІРѕРїСЂРѕСЃ</h1>
+        <p class="page-subtitle">Р¤РѕСЂРјСѓР»РёСЂРѕРІРєР°, С‚РёРї РѕС‚РІРµС‚Р° Рё РїСЂР°РІРёР»СЊРЅС‹Рµ РІР°СЂРёР°РЅС‚С‹</p>
+      </div>
+      <a href="questions.html" class="btn">РќР°Р·Р°Рґ Рє СЃРїРёСЃРєСѓ</a>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <form id="question-form" class="card">
+      <div class="form-group">
+        <label for="text">Р¤РѕСЂРјСѓР»РёСЂРѕРІРєР° РІРѕРїСЂРѕСЃР°</label>
+        <textarea id="text" required></textarea>
+      </div>
+
+      <div class="grid-2">
+        <div class="form-group">
+          <label for="type">РўРёРї РІРѕРїСЂРѕСЃР°</label>
+          <select id="type" onchange="toggleType()">
+            <option value="SingleChoice">РћРґРёРЅ РІР°СЂРёР°РЅС‚ (SingleChoice)</option>
+            <option value="MultipleChoice">РќРµСЃРєРѕР»СЊРєРѕ РІР°СЂРёР°РЅС‚РѕРІ (MultipleChoice)</option>
+            <option value="Text">РўРµРєСЃС‚РѕРІС‹Р№ РІРІРѕРґ (Text)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="points">Р‘Р°Р»Р»С‹ Р·Р° РїСЂР°РІРёР»СЊРЅС‹Р№ РѕС‚РІРµС‚</label>
+          <input type="number" id="points" value="1" min="1" required>
+        </div>
+      </div>
+
+      <div id="options-section" class="form-group">
+        <label>Р’Р°СЂРёР°РЅС‚С‹ РѕС‚РІРµС‚Р° (РѕС‚РјРµС‚СЊС‚Рµ РїСЂР°РІРёР»СЊРЅС‹Рµ)</label>
+        <div id="options-list"></div>
+        <button type="button" class="btn btn-sm" style="margin-top:8px;" onclick="addOptionRow()">+ Р”РѕР±Р°РІРёС‚СЊ РІР°СЂРёР°РЅС‚</button>
+      </div>
+
+      <div id="text-answer-section" class="form-group" style="display:none;">
+        <label for="correctText">Р­С‚Р°Р»РѕРЅРЅС‹Р№ С‚РµРєСЃС‚РѕРІС‹Р№ РѕС‚РІРµС‚</label>
+        <input type="text" id="correctText" placeholder="РўРѕС‡РЅРѕРµ СЃРѕРІРїР°РґРµРЅРёРµ (Р±РµР· СѓС‡С‘С‚Р° СЂРµРіРёСЃС‚СЂР°)">
+      </div>
+
+      <div style="margin-top:18px;display:flex;gap:10px;">
+        <button type="submit" class="btn btn-primary">РЎРѕС…СЂР°РЅРёС‚СЊ РІРѕРїСЂРѕСЃ</button>
+        <a href="questions.html" class="btn">РћС‚РјРµРЅР°</a>
+      </div>
+    </form>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    requireAuth();
+    renderNavbar('questions');
+    const questionId = new URLSearchParams(window.location.search).get('id');
+
+    function toggleType() {
+      const isText = document.getElementById('type').value === 'Text';
+      document.getElementById('options-section').style.display = isText ? 'none' : 'block';
+      document.getElementById('text-answer-section').style.display = isText ? 'block' : 'none';
+    }
+
+    function addOptionRow(text = '', isCorrect = false) {
+      const container = document.getElementById('options-list');
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:8px;';
+      row.innerHTML = `
+        <input type="checkbox" class="opt-correct" ${isCorrect ? 'checked' : ''} title="РџСЂР°РІРёР»СЊРЅС‹Р№ РѕС‚РІРµС‚">
+        <input type="text" class="opt-text" value="${text.replace(/"/g, '&quot;')}" placeholder="РўРµРєСЃС‚ РІР°СЂРёР°РЅС‚Р°">
+        <button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">Г—</button>
+      `;
+      container.appendChild(row);
+    }
+
+    async function init() {
+      if (!questionId) {
+        addOptionRow();
+        addOptionRow();
+        return;
+      }
+      document.getElementById('page-title').textContent = 'Р РµРґР°РєС‚РёСЂРѕРІР°РЅРёРµ РІРѕРїСЂРѕСЃР°';
+      try {
+        const q = await apiRequest('creation', `/api/questions/${questionId}`);
+        document.getElementById('text').value = q.text;
+        document.getElementById('type').value = q.type || 'SingleChoice';
+        document.getElementById('points').value = q.points ?? 1;
+        document.getElementById('correctText').value = q.correctText || '';
+        toggleType();
+        (q.options || []).forEach(o => addOptionRow(o.text, o.isCorrect));
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+
+    document.getElementById('question-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const type = document.getElementById('type').value;
+      const options = type === 'Text' ? [] : Array.from(document.querySelectorAll('#options-list > div')).map(row => ({
+        text: row.querySelector('.opt-text').value.trim(),
+        isCorrect: row.querySelector('.opt-correct').checked
+      })).filter(o => o.text);
+
+      const payload = {
+        text: document.getElementById('text').value.trim(),
+        type,
+        points: Number(document.getElementById('points').value),
+        options,
+        correctText: type === 'Text' ? document.getElementById('correctText').value.trim() : null
+      };
+
+      try {
+        if (questionId) {
+          await apiRequest('creation', `/api/questions/${questionId}`, { method: 'PUT', body: payload });
+        } else {
+          await apiRequest('creation', '/api/questions', { method: 'POST', body: payload });
+        }
+        window.location.href = 'questions.html';
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    });
+
+    init();
+  </script>
+</body>
+</html>
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\frontend\questions.html ===
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>РњРѕРё РІРѕРїСЂРѕСЃС‹ вЂ” KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container">
+    <div class="page-header">
+      <div>
+        <h1>Р‘Р°РЅРє РІРѕРїСЂРѕСЃРѕРІ</h1>
+        <p class="page-subtitle">Р’РѕРїСЂРѕСЃС‹, РґРѕСЃС‚СѓРїРЅС‹Рµ РґР»СЏ РІРєР»СЋС‡РµРЅРёСЏ РІ РІР°С€Рё С‚РµСЃС‚С‹</p>
+      </div>
+      <a href="question-edit.html" class="btn btn-primary">+ РќРѕРІС‹Р№ РІРѕРїСЂРѕСЃ</a>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>РўРµРєСЃС‚ РІРѕРїСЂРѕСЃР°</th>
+            <th>РўРёРї</th>
+            <th>Р‘Р°Р»Р»С‹</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="questions-body"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    requireAuth();
+    renderNavbar('questions');
+
+    async function loadQuestions() {
+      try {
+        const data = await apiRequest('creation', '/api/questions');
+        const list = Array.isArray(data) ? data : (data.items || []);
+        const tbody = document.getElementById('questions-body');
+
+        if (!list.length) {
+          tbody.innerHTML = '<tr><td colspan="4" class="muted">Р’РѕРїСЂРѕСЃРѕРІ РїРѕРєР° РЅРµС‚. РЎРѕР·РґР°Р№С‚Рµ РїРµСЂРІС‹Р№ РІРѕРїСЂРѕСЃ.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = list.map(q => `
+          <tr>
+            <td>${q.text}</td>
+            <td><span class="badge">${q.type || 'SingleChoice'}</span></td>
+            <td class="mono">${q.points ?? 1}</td>
+            <td style="text-align:right;" class="row-actions">
+              <a href="question-edit.html?id=${q.id}" class="btn btn-sm">РР·РјРµРЅРёС‚СЊ</a>
+              <button class="btn btn-sm btn-danger" onclick="deleteQuestion('${q.id}')">РЈРґР°Р»РёС‚СЊ</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+
+    async function deleteQuestion(id) {
+      if (!confirm('РЈРґР°Р»РёС‚СЊ РІРѕРїСЂРѕСЃ?')) return;
+      try {
+        await apiRequest('creation', `/api/questions/${id}`, { method: 'DELETE' });
+        loadQuestions();
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+    loadQuestions();
+  </script>
+</body>
+</html>
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\frontend\register.html ===
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Р РµРіРёСЃС‚СЂР°С†РёСЏ вЂ” KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container container-narrow">
+    <div class="page-header">
+      <div>
+        <h1>Р РµРіРёСЃС‚СЂР°С†РёСЏ</h1>
+        <p class="page-subtitle">РЎРѕР·РґР°РЅРёРµ РЅРѕРІРѕРіРѕ Р°РєРєР°СѓРЅС‚Р° РІ KnowledgeControl</p>
+      </div>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <form id="register-form" class="card">
+      <div class="form-group">
+        <label for="fullName">РРјСЏ Рё С„Р°РјРёР»РёСЏ</label>
+        <input type="text" id="fullName" required>
+      </div>
+      <div class="form-group">
+        <label for="email">Email</label>
+        <input type="email" id="email" required>
+      </div>
+      <div class="form-group">
+        <label for="password">РџР°СЂРѕР»СЊ</label>
+        <input type="password" id="password" minlength="6" required>
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%;">РЎРѕР·РґР°С‚СЊ Р°РєРєР°СѓРЅС‚</button>
+      <p class="muted" style="margin:14px 0 0;text-align:center;">
+        РЈР¶Рµ РµСЃС‚СЊ Р°РєРєР°СѓРЅС‚? <a href="login.html">Р’РѕР№С‚Рё</a>
+      </p>
+    </form>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    renderNavbar();
+    document.getElementById('register-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        const res = await apiRequest('user', '/api/auth/register', {
+          method: 'POST',
+          body: {
+            fullName: document.getElementById('fullName').value.trim(),
+            email: document.getElementById('email').value.trim(),
+            password: document.getElementById('password').value
+          }
+        });
+        if (res && (res.token || res.accessToken)) {
+          localStorage.setItem('kc_token', res.token || res.accessToken);
+          window.location.href = 'index.html';
+        } else {
+          window.location.href = 'login.html';
+        }
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    });
+  </script>
+</body>
+</html>
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\frontend\result.html ===
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Р РµР·СѓР»СЊС‚Р°С‚ РїРѕРїС‹С‚РєРё вЂ” KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container" style="max-width:720px;">
+    <div class="page-header">
+      <div>
+        <h1 id="test-title">Р РµР·СѓР»СЊС‚Р°С‚ С‚РµСЃС‚РёСЂРѕРІР°РЅРёСЏ</h1>
+        <p class="page-subtitle" id="attempt-meta"></p>
+      </div>
+      <a href="index.html" class="btn">Р’ РєР°С‚Р°Р»РѕРі</a>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <div class="card">
+      <div class="muted">РќР°Р±СЂР°РЅРЅС‹Р№ Р±Р°Р»Р»</div>
+      <div id="score-box" class="mono" style="font-size:32px;font-weight:700;margin:6px 0;">вЂ”</div>
+      <div id="percent-box" class="muted"></div>
+    </div>
+
+    <div id="details-list"></div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    requireAuth();
+    renderNavbar();
+    const attemptId = new URLSearchParams(window.location.search).get('attemptId');
+
+    async function loadResult() {
+      if (!attemptId) return showAlert('alert', 'РќРµ СѓРєР°Р·Р°РЅ attemptId.');
+      try {
+        const res = await apiRequest('taking', `/api/attempts/${attemptId}`);
+        document.getElementById('test-title').textContent = res.testTitle || 'Р РµР·СѓР»СЊС‚Р°С‚ С‚РµСЃС‚РёСЂРѕРІР°РЅРёСЏ';
+        document.getElementById('score-box').textContent = `${res.score ?? 0} / ${res.maxScore ?? 0}`;
+        const pct = res.maxScore ? Math.round((res.score / res.maxScore) * 100) : 0;
+        document.getElementById('percent-box').textContent = `Р’С‹РїРѕР»РЅРµРЅРѕ: ${pct}%`;
+
+        if (Array.isArray(res.answers)) {
+          document.getElementById('details-list').innerHTML = res.answers.map((a, i) => `
+            <div class="card" style="display:flex;justify-content:space-between;align-items:center;">
+              <span>Р’РѕРїСЂРѕСЃ #${i + 1}</span>
+              <span class="badge ${a.isCorrect ? 'badge-success' : 'badge-danger'}">
+                ${a.isCorrect ? 'Р’РµСЂРЅРѕ' : 'РќРµРІРµСЂРЅРѕ'} (${a.earnedPoints ?? 0} Р±.)
+              </span>
+            </div>
+          `).join('');
+        }
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+    loadResult();
+  </script>
+</body>
+</html>
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\frontend\search.html ===
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>РџРѕРёСЃРє С‚РµСЃС‚РѕРІ вЂ” KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container">
+    <div class="page-header">
+      <div>
+        <h1>РџРѕРёСЃРє С‚РµСЃС‚РѕРІ</h1>
+        <p class="page-subtitle">Р¤РёР»СЊС‚СЂР°С†РёСЏ РїРѕ РЅР°Р·РІР°РЅРёСЋ, С‚РµРіР°Рј Рё РєР°С‚РµРіРѕСЂРёРё</p>
+      </div>
+    </div>
+
+    <form id="search-form" class="card" style="display:grid;grid-template-columns:2fr 1fr auto;gap:12px;align-items:end;">
+      <div class="form-group" style="margin:0;">
+        <label for="q">РљР»СЋС‡РµРІС‹Рµ СЃР»РѕРІР°</label>
+        <input type="text" id="q" placeholder="РќР°РїСЂРёРјРµСЂ: PostgreSQL, Р°Р»РіРѕСЂРёС‚РјС‹, HTTP...">
+      </div>
+      <div class="form-group" style="margin:0;">
+        <label for="category">РљР°С‚РµРіРѕСЂРёСЏ</label>
+        <input type="text" id="category" placeholder="Р’СЃРµ РєР°С‚РµРіРѕСЂРёРё">
+      </div>
+      <button type="submit" class="btn btn-primary">РќР°Р№С‚Рё</button>
+    </form>
+
+    <div id="alert" class="alert"></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>РќР°Р·РІР°РЅРёРµ</th>
+            <th>РљР°С‚РµРіРѕСЂРёСЏ</th>
+            <th>Р’РѕРїСЂРѕСЃРѕРІ</th>
+            <th>РџСЂРѕС…РѕР¶РґРµРЅРёР№</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="results-body">
+          <tr><td colspan="5" class="muted">Р’РІРµРґРёС‚Рµ Р·Р°РїСЂРѕСЃ РёР»Рё РЅР°Р¶РјРёС‚Рµ В«РќР°Р№С‚РёВ»</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    renderNavbar('search');
+
+    async function runSearch(e) {
+      if (e) e.preventDefault();
+      const q = document.getElementById('q').value.trim();
+      const category = document.getElementById('category').value.trim();
+      const params = new URLSearchParams();
+      if (q) params.set('query', q);
+      if (category) params.set('category', category);
+
+      try {
+        const data = await apiRequest('search', `/api/tests?${params.toString()}`);
+        const items = Array.isArray(data) ? data : (data.items || []);
+        const tbody = document.getElementById('results-body');
+
+        if (!items.length) {
+          tbody.innerHTML = '<tr><td colspan="5" class="muted">РќРёС‡РµРіРѕ РЅРµ РЅР°Р№РґРµРЅРѕ.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = items.map(t => `
+          <tr>
+            <td><strong>${t.title}</strong><div class="muted">${t.description || ''}</div></td>
+            <td><span class="badge">${t.category || 'РћР±С‰РµРµ'}</span></td>
+            <td class="mono">${t.questionsCount ?? 'вЂ”'}</td>
+            <td class="mono">${t.attemptsCount ?? 0}</td>
+            <td style="text-align:right;"><a href="take-test.html?testUid=${t.uid || t.id}" class="btn btn-sm">РћС‚РєСЂС‹С‚СЊ</a></td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+
+    document.getElementById('search-form').addEventListener('submit', runSearch);
+    runSearch();
+  </script>
+</body>
+</html>
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\frontend\take-test.html ===
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>РџСЂРѕС…РѕР¶РґРµРЅРёРµ С‚РµСЃС‚Р° вЂ” KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container" style="max-width:780px;">
+    <div class="page-header">
+      <div>
+        <h1 id="test-title">Р—Р°РіСЂСѓР·РєР° С‚РµСЃС‚Р°...</h1>
+        <p class="page-subtitle" id="test-meta"></p>
+      </div>
+      <div id="timer" class="badge mono" style="font-size:14px;padding:6px 10px;"></div>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <form id="attempt-form">
+      <div id="questions-container"></div>
+      <button type="submit" id="submit-btn" class="btn btn-primary" style="display:none;">Р—Р°РІРµСЂС€РёС‚СЊ Рё РѕС‚РїСЂР°РІРёС‚СЊ РѕС‚РІРµС‚С‹</button>
+    </form>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    requireAuth();
+    renderNavbar();
+    const testUid = new URLSearchParams(window.location.search).get('testUid');
+    let attemptId = null;
+    let questions = [];
+
+    async function startAttempt() {
+      if (!testUid) return showAlert('alert', 'РќРµ СѓРєР°Р·Р°РЅ testUid РІ URL.');
+      try {
+        const data = await apiRequest('taking', '/api/attempts/start', {
+          method: 'POST',
+          body: { testUid }
+        });
+
+        attemptId = data.attemptId || data.id;
+        questions = data.questions || [];
+        document.getElementById('test-title').textContent = data.testTitle || 'РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ';
+        document.getElementById('test-meta').textContent = `Р’РѕРїСЂРѕСЃРѕРІ: ${questions.length}`;
+
+        if (data.expiresAt) startTimer(new Date(data.expiresAt));
+
+        const container = document.getElementById('questions-container');
+        container.innerHTML = questions.map((q, idx) => `
+          <div class="card">
+            <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+              <strong>Р’РѕРїСЂРѕСЃ ${idx + 1}</strong>
+              <span class="mono muted">${q.points ?? 1} Р±.</span>
+            </div>
+            <p style="margin:0 0 12px;">${q.text}</p>
+            ${renderInputs(q)}
+          </div>
+        `).join('');
+
+        document.getElementById('submit-btn').style.display = 'inline-flex';
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+
+    function renderInputs(q) {
+      if (q.type === 'Text') {
+        return `<input type="text" name="q_${q.id}" placeholder="Р’РІРµРґРёС‚Рµ РѕС‚РІРµС‚...">`;
+      }
+      const inputType = q.type === 'MultipleChoice' ? 'checkbox' : 'radio';
+      return (q.options || []).map(o => `
+        <label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-weight:400;cursor:pointer;">
+          <input type="${inputType}" name="q_${q.id}" value="${o.id}">
+          <span>${o.text}</span>
+        </label>
+      `).join('');
+    }
+
+    function startTimer(expiresAt) {
+      const el = document.getElementById('timer');
+      const tick = () => {
+        const diff = Math.max(0, Math.floor((expiresAt - Date.now()) / 1000));
+        const m = String(Math.floor(diff / 60)).padStart(2, '0');
+        const s = String(diff % 60).padStart(2, '0');
+        el.textContent = `РћСЃС‚Р°Р»РѕСЃСЊ: ${m}:${s}`;
+        if (diff === 0) document.getElementById('attempt-form').requestSubmit();
+      };
+      tick();
+      setInterval(tick, 1000);
+    }
+
+    document.getElementById('attempt-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const answers = questions.map(q => {
+        if (q.type === 'Text') {
+          const val = document.querySelector(`input[name="q_${q.id}"]`)?.value || '';
+          return { questionId: q.id, textAnswer: val.trim(), selectedOptionIds: [] };
+        }
+        const checked = Array.from(document.querySelectorAll(`input[name="q_${q.id}"]:checked`)).map(i => i.value);
+        return { questionId: q.id, selectedOptionIds: checked, textAnswer: null };
+      });
+
+      try {
+        await apiRequest('taking', `/api/attempts/${attemptId}/submit`, {
+          method: 'POST',
+          body: { answers }
+        });
+        window.location.href = `result.html?attemptId=${attemptId}`;
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    });
+
+    startAttempt();
+  </script>
+</body>
+</html>
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\frontend\test-edit.html ===
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>РљРѕРЅСЃС‚СЂСѓРєС‚РѕСЂ С‚РµСЃС‚Р° вЂ” KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container" style="max-width:780px;">
+    <div class="page-header">
+      <div>
+        <h1 id="page-title">РЎРѕР·РґР°РЅРёРµ С‚РµСЃС‚Р°</h1>
+        <p class="page-subtitle">РњРµС‚Р°РґР°РЅРЅС‹Рµ С‚РµСЃС‚Р° Рё РІС‹Р±РѕСЂ РІРѕРїСЂРѕСЃРѕРІ РёР· Р±Р°РЅРєР°</p>
+      </div>
+      <a href="tests.html" class="btn">Рљ РјРѕРёРј С‚РµСЃС‚Р°Рј</a>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <form id="test-form" class="card">
+      <div class="form-group">
+        <label for="title">РќР°Р·РІР°РЅРёРµ С‚РµСЃС‚Р°</label>
+        <input type="text" id="title" required>
+      </div>
+      <div class="form-group">
+        <label for="description">РћРїРёСЃР°РЅРёРµ</label>
+        <textarea id="description"></textarea>
+      </div>
+      <div class="grid-2">
+        <div class="form-group">
+          <label for="category">РљР°С‚РµРіРѕСЂРёСЏ</label>
+          <input type="text" id="category" placeholder="РќР°РїСЂРёРјРµСЂ: Р‘Р°Р·С‹ РґР°РЅРЅС‹С…">
+        </div>
+        <div class="form-group">
+          <label for="timeLimit">РћРіСЂР°РЅРёС‡РµРЅРёРµ РїРѕ РІСЂРµРјРµРЅРё (РјРёРЅСѓС‚, 0 вЂ” Р±РµР· Р»РёРјРёС‚Р°)</label>
+          <input type="number" id="timeLimit" value="15" min="0">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Р’С‹Р±РµСЂРёС‚Рµ РІРѕРїСЂРѕСЃС‹ РґР»СЏ С‚РµСЃС‚Р°</label>
+        <div id="questions-checklist" style="border:1px solid var(--border);border-radius:var(--radius);padding:10px;max-height:260px;overflow-y:auto;">
+          <span class="muted">Р—Р°РіСЂСѓР·РєР° СЃРїРёСЃРєР° РІРѕРїСЂРѕСЃРѕРІ...</span>
+        </div>
+      </div>
+
+      <div style="margin-top:18px;display:flex;gap:10px;">
+        <button type="submit" class="btn btn-primary">РЎРѕС…СЂР°РЅРёС‚СЊ С‚РµСЃС‚</button>
+        <a href="tests.html" class="btn">РћС‚РјРµРЅР°</a>
+      </div>
+    </form>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    requireAuth();
+    renderNavbar('tests');
+    const testId = new URLSearchParams(window.location.search).get('id');
+
+    async function init() {
+      try {
+        const qData = await apiRequest('creation', '/api/questions');
+        const allQuestions = Array.isArray(qData) ? qData : (qData.items || []);
+        let selectedIds = new Set();
+
+        if (testId) {
+          document.getElementById('page-title').textContent = 'Р РµРґР°РєС‚РёСЂРѕРІР°РЅРёРµ С‚РµСЃС‚Р°';
+          const test = await apiRequest('creation', `/api/tests/${testId}`);
+          document.getElementById('title').value = test.title || '';
+          document.getElementById('description').value = test.description || '';
+          document.getElementById('category').value = test.category || '';
+          document.getElementById('timeLimit').value = test.timeLimitMinutes ?? 0;
+          selectedIds = new Set(test.questionIds || (test.questions || []).map(q => q.id));
+        }
+
+        const box = document.getElementById('questions-checklist');
+        if (!allQuestions.length) {
+          box.innerHTML = '<span class="muted">РЎРЅР°С‡Р°Р»Р° РґРѕР±Р°РІСЊС‚Рµ РІРѕРїСЂРѕСЃС‹ РІ СЂР°Р·РґРµР»Рµ В«Р’РѕРїСЂРѕСЃС‹В».</span>';
+          return;
+        }
+
+        box.innerHTML = allQuestions.map(q => `
+          <label style="display:flex;align-items:flex-start;gap:8px;padding:6px 4px;border-bottom:1px solid var(--border);font-weight:400;cursor:pointer;">
+            <input type="checkbox" name="qIds" value="${q.id}" ${selectedIds.has(q.id) ? 'checked' : ''} style="margin-top:3px;">
+            <span>${q.text} <span class="badge">${q.points ?? 1} Р±.</span></span>
+          </label>
+        `).join('');
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+
+    document.getElementById('test-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const questionIds = Array.from(document.querySelectorAll('input[name="qIds"]:checked')).map(cb => cb.value);
+      const payload = {
+        title: document.getElementById('title').value.trim(),
+        description: document.getElementById('description').value.trim(),
+        category: document.getElementById('category').value.trim(),
+        timeLimitMinutes: Number(document.getElementById('timeLimit').value) || null,
+        questionIds
+      };
+
+      try {
+        if (testId) {
+          await apiRequest('creation', `/api/tests/${testId}`, { method: 'PUT', body: payload });
+        } else {
+          await apiRequest('creation', '/api/tests', { method: 'POST', body: payload });
+        }
+        window.location.href = 'tests.html';
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    });
+
+    init();
+  </script>
+</body>
+</html>
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\frontend\test-stats.html ===
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>РЎС‚Р°С‚РёСЃС‚РёРєР° С‚РµСЃС‚Р° вЂ” KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container">
+    <div class="page-header">
+      <div>
+        <h1 id="test-title">РЎС‚Р°С‚РёСЃС‚РёРєР° С‚РµСЃС‚Р°</h1>
+        <p class="page-subtitle">РђРіСЂРµРіРёСЂРѕРІР°РЅРЅС‹Рµ РїРѕРєР°Р·Р°С‚РµР»Рё РёР· SearchService</p>
+      </div>
+      <a href="tests.html" class="btn">РќР°Р·Р°Рґ</a>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <div class="grid-3">
+      <div class="card">
+        <div class="muted">Р’СЃРµРіРѕ РїСЂРѕС…РѕР¶РґРµРЅРёР№</div>
+        <div id="stat-attempts" class="mono" style="font-size:26px;font-weight:700;margin-top:4px;">вЂ”</div>
+      </div>
+      <div class="card">
+        <div class="muted">РЎСЂРµРґРЅРёР№ Р±Р°Р»Р»</div>
+        <div id="stat-avg" class="mono" style="font-size:26px;font-weight:700;margin-top:4px;">вЂ”</div>
+      </div>
+      <div class="card">
+        <div class="muted">РџСЂРѕС†РµРЅС‚ СѓСЃРїРµС€РЅС‹С…</div>
+        <div id="stat-pass" class="mono" style="font-size:26px;font-weight:700;margin-top:4px;">вЂ”</div>
+      </div>
+    </div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    requireAuth();
+    renderNavbar('tests');
+    const testUid = new URLSearchParams(window.location.search).get('testUid');
+
+    async function loadStats() {
+      if (!testUid) return showAlert('alert', 'РќРµ СѓРєР°Р·Р°РЅ РёРґРµРЅС‚РёС„РёРєР°С‚РѕСЂ С‚РµСЃС‚Р°.');
+      try {
+        const stats = await apiRequest('search', `/api/tests/${testUid}/stats`);
+        if (stats.title) document.getElementById('test-title').textContent = `РЎС‚Р°С‚РёСЃС‚РёРєР°: ${stats.title}`;
+        document.getElementById('stat-attempts').textContent = stats.attemptsCount ?? stats.totalAttempts ?? 0;
+        document.getElementById('stat-avg').textContent = stats.averageScore != null ? Number(stats.averageScore).toFixed(1) : 'вЂ”';
+        document.getElementById('stat-pass').textContent = stats.passRate != null ? `${Math.round(stats.passRate)}%` : 'вЂ”';
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+    loadStats();
+  </script>
+</body>
+</html>
+
+=== FILE: D:\учёба\5 семестр\Курсач по Backend-разработке\KnowledgeControl\frontend\tests.html ===
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>РњРѕРё С‚РµСЃС‚С‹ вЂ” KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container">
+    <div class="page-header">
+      <div>
+        <h1>РњРѕРё С‚РµСЃС‚С‹</h1>
+        <p class="page-subtitle">РЈРїСЂР°РІР»РµРЅРёРµ С‡РµСЂРЅРѕРІРёРєР°РјРё, РѕС‚РїСЂР°РІРєР° РЅР° РјРѕРґРµСЂР°С†РёСЋ Рё РїСѓР±Р»РёРєР°С†РёСЏ</p>
+      </div>
+      <a href="test-edit.html" class="btn btn-primary">+ РЎРѕР·РґР°С‚СЊ С‚РµСЃС‚</a>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>РќР°Р·РІР°РЅРёРµ</th>
+            <th>РЎС‚Р°С‚СѓСЃ</th>
+            <th>Р’РѕРїСЂРѕСЃРѕРІ</th>
+            <th>Р”РµР№СЃС‚РІРёСЏ</th>
+          </tr>
+        </thead>
+        <tbody id="tests-body"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    requireAuth();
+    renderNavbar('tests');
+
+    function statusBadge(status) {
+      if (status === 'Published') return '<span class="badge badge-success">Published</span>';
+      if (status === 'PendingModeration' || status === 'OnModeration') return '<span class="badge badge-warn">РќР° РјРѕРґРµСЂР°С†РёРё</span>';
+      if (status === 'Rejected') return '<span class="badge badge-danger">РћС‚РєР»РѕРЅС‘РЅ</span>';
+      return `<span class="badge">${status || 'Draft'}</span>`;
+    }
+
+    async function loadMyTests() {
+      try {
+        const data = await apiRequest('creation', '/api/tests/my');
+        const list = Array.isArray(data) ? data : (data.items || []);
+        const tbody = document.getElementById('tests-body');
+
+        if (!list.length) {
+          tbody.innerHTML = '<tr><td colspan="4" class="muted">РЈ РІР°СЃ РїРѕРєР° РЅРµС‚ СЃРѕР·РґР°РЅРЅС‹С… С‚РµСЃС‚РѕРІ.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = list.map(t => `
+          <tr>
+            <td><strong>${t.title}</strong><div class="muted">${t.category || ''}</div></td>
+            <td>${statusBadge(t.status)}</td>
+            <td class="mono">${t.questionsCount ?? (t.questionIds ? t.questionIds.length : 'вЂ”')}</td>
+            <td class="row-actions">
+              <a href="test-edit.html?id=${t.id}" class="btn btn-sm">Р РµРґР°РєС‚РёСЂРѕРІР°С‚СЊ</a>
+              <a href="test-stats.html?testUid=${t.uid || t.id}" class="btn btn-sm">РЎС‚Р°С‚РёСЃС‚РёРєР°</a>
+              ${t.status !== 'Published' ? `<button class="btn btn-sm btn-primary" onclick="submitModeration('${t.id}')">РќР° РјРѕРґРµСЂР°С†РёСЋ</button>` : ''}
+            </td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+
+    async function submitModeration(id) {
+      try {
+        await apiRequest('creation', `/api/tests/${id}/submit`, { method: 'POST' });
+        showAlert('alert', 'РўРµСЃС‚ РѕС‚РїСЂР°РІР»РµРЅ РЅР° РјРѕРґРµСЂР°С†РёСЋ.', 'success');
+        loadMyTests();
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+
+    loadMyTests();
+  </script>
+</body>
+</html>
 

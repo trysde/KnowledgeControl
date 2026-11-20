@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Поиск тестов — KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container">
+    <div class="page-header">
+      <div>
+        <h1>Поиск тестов</h1>
+        <p class="page-subtitle">Фильтрация по названию, тегам и категории</p>
+      </div>
+    </div>
+
+    <form id="search-form" class="card" style="display:grid;grid-template-columns:2fr 1fr auto;gap:12px;align-items:end;">
+      <div class="form-group" style="margin:0;">
+        <label for="q">Ключевые слова</label>
+        <input type="text" id="q" placeholder="Например: PostgreSQL, алгоритмы, HTTP...">
+      </div>
+      <div class="form-group" style="margin:0;">
+        <label for="category">Категория</label>
+        <input type="text" id="category" placeholder="Все категории">
+      </div>
+      <button type="submit" class="btn btn-primary">Найти</button>
+    </form>
+
+    <div id="alert" class="alert"></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Название</th>
+            <th>Категория</th>
+            <th>Вопросов</th>
+            <th>Прохождений</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="results-body">
+          <tr><td colspan="5" class="muted">Введите запрос или нажмите «Найти»</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    renderNavbar('search');
+
+    async function runSearch(e) {
+      if (e) e.preventDefault();
+      const q = document.getElementById('q').value.trim();
+      const category = document.getElementById('category').value.trim();
+      const params = new URLSearchParams();
+      if (q) params.set('query', q);
+      if (category) params.set('category', category);
+
+      try {
+        const data = await apiRequest('search', `/api/tests?${params.toString()}`);
+        const items = Array.isArray(data) ? data : (data.items || []);
+        const tbody = document.getElementById('results-body');
+
+        if (!items.length) {
+          tbody.innerHTML = '<tr><td colspan="5" class="muted">Ничего не найдено.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = items.map(t => `
+          <tr>
+            <td><strong>${t.title}</strong><div class="muted">${t.description || ''}</div></td>
+            <td><span class="badge">${t.category || 'Общее'}</span></td>
+            <td class="mono">${t.questionsCount ?? '—'}</td>
+            <td class="mono">${t.attemptsCount ?? 0}</td>
+            <td style="text-align:right;"><a href="take-test.html?testUid=${t.uid || t.id}" class="btn btn-sm">Открыть</a></td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+
+    document.getElementById('search-form').addEventListener('submit', runSearch);
+    runSearch();
+  </script>
+</body>
+</html>

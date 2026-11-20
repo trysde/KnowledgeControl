@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Статистика теста — KnowledgeControl</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="navbar" class="topbar"></header>
+  <main class="container">
+    <div class="page-header">
+      <div>
+        <h1 id="test-title">Статистика теста</h1>
+        <p class="page-subtitle">Агрегированные показатели из SearchService</p>
+      </div>
+      <a href="tests.html" class="btn">Назад</a>
+    </div>
+
+    <div id="alert" class="alert"></div>
+    <div class="grid-3">
+      <div class="card">
+        <div class="muted">Всего прохождений</div>
+        <div id="stat-attempts" class="mono" style="font-size:26px;font-weight:700;margin-top:4px;">—</div>
+      </div>
+      <div class="card">
+        <div class="muted">Средний балл</div>
+        <div id="stat-avg" class="mono" style="font-size:26px;font-weight:700;margin-top:4px;">—</div>
+      </div>
+      <div class="card">
+        <div class="muted">Процент успешных</div>
+        <div id="stat-pass" class="mono" style="font-size:26px;font-weight:700;margin-top:4px;">—</div>
+      </div>
+    </div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    requireAuth();
+    renderNavbar('tests');
+    const testUid = new URLSearchParams(window.location.search).get('testUid');
+
+    async function loadStats() {
+      if (!testUid) return showAlert('alert', 'Не указан идентификатор теста.');
+      try {
+        const stats = await apiRequest('search', `/api/tests/${testUid}/stats`);
+        if (stats.title) document.getElementById('test-title').textContent = `Статистика: ${stats.title}`;
+        document.getElementById('stat-attempts').textContent = stats.attemptsCount ?? stats.totalAttempts ?? 0;
+        document.getElementById('stat-avg').textContent = stats.averageScore != null ? Number(stats.averageScore).toFixed(1) : '—';
+        document.getElementById('stat-pass').textContent = stats.passRate != null ? `${Math.round(stats.passRate)}%` : '—';
+      } catch (err) {
+        showAlert('alert', err.message);
+      }
+    }
+    loadStats();
+  </script>
+</body>
+</html>

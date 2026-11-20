@@ -327,6 +327,13 @@ public class AttemptService(
             throw new ForbiddenException("Нет доступа к результатам данной попытки.");
         }
 
+        if (TryMarkExpired(attempt, DateTime.UtcNow))
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await snapshotCache.RemoveAsync(attempt.Uid, cancellationToken);
+            throw new BadRequestException("Время на прохождение попытки истекло.");
+        }
+
         if (attempt.Result is null)
         {
             throw new BadRequestException("Попытка ещё не завершена, результат недоступен.");
